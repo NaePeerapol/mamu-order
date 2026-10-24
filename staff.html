@@ -29,7 +29,9 @@ small { font-size: 12px; }
 /* top */
 .top { position: sticky; top: 0; z-index: 10; background: var(--card); border-bottom: 1px solid var(--line); }
 .top-in { display: flex; align-items: center; gap: 10px; padding: 10px 14px; }
-.logo { width: 38px; height: 38px; border-radius: 10px; background: var(--brand); color: #fff; display: grid; place-items: center; font-weight: 700; flex: none; }
+.logo { width: 38px; height: 38px; border-radius: 10px; background: var(--brand); color: #fff; display: grid; place-items: center; font-weight: 700; flex: none; overflow: hidden; }
+.logo.has-img { background: #fff; border: 1px solid var(--line); border-radius: 50%; }
+.logo img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .top-main { flex: 1; min-width: 0; }
 .top-main b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .top-main small { color: var(--muted); }
@@ -351,7 +353,11 @@ function viewTop() {
   const inDate = d.orders.filter((o) => o.slot_date === S.date);
   const count = (f) => inDate.filter((o) => matches(o, f)).length;
   const cupsOf = (ds) => d.orders.filter((o) => o.slot_date === ds && o.status !== 'cancelled').reduce((n, o) => n + o.cups, 0);
-  return '<div class="top"><div class="top-in"><div class="logo">' + h((d.shop.name || '☕').charAt(0)) + '</div>' +
+  const initial = h((d.shop.name || '☕').charAt(0));
+  const logo = d.shop.logo_url
+    ? '<div class="logo has-img"><img src="' + h(d.shop.logo_url) + '" alt="" onerror="this.parentNode.classList.remove(\'has-img\');this.replaceWith(\'' + initial.replace(/'/g, '') + '\')"></div>'
+    : '<div class="logo">' + initial + '</div>';
+  return '<div class="top"><div class="top-in">' + logo +
     '<div class="top-main"><b>' + h(d.shop.name) + ' · พนักงาน</b><small>อัปเดต ' + h(S.lastSync) +
     (S.error ? ' · <span style="color:var(--brand)">' + h(S.error) + '</span>' : '') + '</small></div>' +
     '<button class="icon-btn ' + (S.sound ? '' : 'off') + '" data-act="toggleSound" title="เสียงเตือน">' + (S.sound ? '🔔' : '🔕') + '</button>' +
