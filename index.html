@@ -81,7 +81,21 @@ small { font-size: 12px; }
 .slot:disabled { opacity: .45; cursor: default; }
 .slot-main { flex: 1; display: flex; flex-direction: column; }
 .slot-main small { color: var(--muted); }
-.slot-left { font-size: 12px; color: var(--muted); }
+.slot-left { font-size: 12px; color: var(--muted); text-align: right; }
+.slot-left.low { color: var(--brand); font-weight: 600; }
+.modes { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.mode { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 12px 14px; border: 1.5px solid var(--line); border-radius: 14px; text-align: left; background: var(--card); }
+.mode-ic { font-size: 24px; line-height: 1; margin-bottom: 4px; }
+.mode b { font-size: 15px; }
+.mode small { color: var(--muted); }
+.mode.on { border-color: var(--brand); background: var(--soft); }
+.mode.on::after { content: '✓'; position: absolute; top: 10px; right: 12px; width: 20px; height: 20px; border-radius: 50%; background: var(--brand); color: #fff; font-size: 12px; display: grid; place-items: center; }
+.days .day { flex: none; display: flex; flex-direction: column; align-items: center; min-width: 76px; padding: 7px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); }
+.days .day b { font-size: 14px; }
+.days .day small { font-size: 11px; color: var(--muted); }
+.days .day.on { background: var(--brand); border-color: var(--brand); color: #fff; }
+.days .day.on small { color: rgba(255,255,255,.85); }
+.days .day.closed { opacity: .45; cursor: default; }
 .radio, .check { width: 20px; height: 20px; border: 2px solid #cfc6c1; border-radius: 50%; flex: none; position: relative; }
 .check { border-radius: 6px; }
 .on > .radio, .on > .check { border-color: var(--brand); }
@@ -256,7 +270,7 @@ const S = {
   mode: 'delivery', dayIdx: 0, slotTime: null,
   location: '', locationNote: '',
   cart: [],
-  phone: '', couponInput: '', couponCode: '', couponMsg: null, quote: null, note: '',
+  phone: '', couponInput: '', couponCode: '', couponMsg: null, quote: null, note: '', usePoints: false,
   sheet: null, busy: false, result: null, sent: '', member: null, memberErr: '',
 };
 
@@ -270,6 +284,8 @@ const store = {
 const $ = (s) => document.querySelector(s);
 const h = (v) => String(v == null ? '' : v).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const fmt = (n) => Number(n || 0).toLocaleString('th-TH');
+const TH_M = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+const shortDate = (ds) => { const p = String(ds).split('-'); return p.length === 3 ? Number(p[2]) + ' ' + TH_M[Number(p[1]) - 1] : ds; };
 const menuById = (id) => S.data.menu.find((m) => m.menu_id === id);
 const groupById = (id) => S.data.optionGroups.find((g) => g.group_id === id);
 const currentDay = () => S.data.days[S.dayIdx];
@@ -390,8 +406,16 @@ function totals() {
   const loc = S.mode === 'delivery' ? S.data.locations.find((l) => l.name === S.location) : null;
   const fee = loc ? loc.delivery_fee : 0;
   const q = S.quote && S.quote.sig === cartSig() ? S.quote : null;
-  const discount = q ? q.discount : 0;
+  const discount = S.usePoints ? Math.min(S.data.shop.redeem_discount || 0, subtotal) : (q ? q.discount : 0);
   return { subtotal: subtotal, fee: fee, discount: discount, total: Math.max(0, subtotal - discount + fee) };
+}
+
+/** ข้อมูลแต้มของ user ปัจจุบัน */
+function pointsInfo() {
+  const shop = S.data.shop, u = S.data.user;
+  const need = shop.points_to_redeem || 0, off = shop.redeem_discount || 0;
+  const have = u ? u.points || 0 : 0;
+  return { enabled: !!(u && need && off), need: need, off: off, have: have, can: have >= need };
 }
 
 function orderPayload() {
@@ -404,7 +428,8 @@ function orderPayload() {
     slot_date: day ? day.date : '',
     slot_time: S.slotTime,
     phone: cleanPhone(S.phone),
-    coupon_code: S.couponCode,
+    coupon_code: S.usePoints ? '' : S.couponCode,
+    use_points: S.usePoints,
     note: S.note,
   };
 }
@@ -473,37 +498,57 @@ function viewOrder() {
   const day = currentDay();
 
   let html = hero();
-  html += '<nav class="tabs"><button class="on" data-act="jump" data-arg="sec-slot">รอบส่ง</button>' +
+  const pickup = S.mode === 'pickup';
+  html += '<nav class="tabs"><button class="on" data-act="jump" data-arg="sec-slot">การรับ</button>' +
     (best.length ? '<button data-act="jump" data-arg="sec-best">ขายดี</button>' : '') +
     cats.map((c, i) => '<button data-act="jump" data-arg="sec-cat-' + i + '">' + h(c) + '</button>').join('') +
     '</nav>';
 
-  // ---- วันและรอบ ----
-  html += '<section class="card" id="sec-slot"><h2 class="sec-title">วันและรอบ' + (S.mode === 'pickup' ? 'รับ' : 'ส่ง') + '</h2>';
+  // ---- 1) รับยังไง ----
   if (d.shop.pickup_enabled) {
-    html += '<div class="seg"><button class="' + (S.mode === 'delivery' ? 'on' : '') + '" data-act="mode" data-arg="delivery">ส่งถึงที่</button>' +
-      '<button class="' + (S.mode === 'pickup' ? 'on' : '') + '" data-act="mode" data-arg="pickup">มารับเอง</button></div>';
+    const fees = d.locations.map((l) => l.delivery_fee);
+    const feeTxt = !fees.length ? '' : Math.max.apply(null, fees) === 0 ? 'ส่งฟรี' : (Math.min.apply(null, fees) === 0 ? 'ส่งฟรีบางจุด' : 'มีค่าส่ง');
+    html += '<section class="card" id="sec-slot"><h2 class="sec-title">รับเครื่องดื่มยังไง</h2><div class="modes">' +
+      '<button class="mode ' + (!pickup ? 'on' : '') + '" data-act="mode" data-arg="delivery"><span class="mode-ic">🛵</span>' +
+      '<b>ส่งถึงที่</b><small>' + h(feeTxt || 'เลือกจุดส่ง') + '</small></button>' +
+      '<button class="mode ' + (pickup ? 'on' : '') + '" data-act="mode" data-arg="pickup"><span class="mode-ic">🛍️</span>' +
+      '<b>มารับเอง</b><small>รับที่ร้าน ไม่มีค่าส่ง</small></button></div></section>';
   }
-  html += '<div class="chips">' + d.days.map((x, i) =>
-    '<button class="chip ' + (i === S.dayIdx ? 'on ' : '') + (x.slots.some((s) => s.open) ? '' : 'dim') + '" data-act="day" data-arg="' + i + '">' + h(x.label) + '</button>'
-  ).join('') + '</div>';
-  html += '<div class="slots">' + (day && day.slots.length ? day.slots.map((s) => {
-    const status = s.open ? 'เหลือ ' + s.remaining + ' แก้ว' : (s.remaining <= 0 ? 'เต็มแล้ว' : 'ปิดรับแล้ว');
-    return '<button class="slot ' + (s.time === S.slotTime ? 'on' : '') + '" ' + (s.open ? '' : 'disabled') + ' data-act="slot" data-arg="' + h(s.time) + '">' +
-      '<span class="radio"></span><span class="slot-main"><b>' + h(s.time) + ' น.</b><small>ปิดรับ ' + h(s.cutoff) + ' น.</small></span>' +
-      '<span class="slot-left">' + status + '</span></button>';
-  }).join('') : '<p class="empty">ยังไม่มีรอบเปิดรับ</p>') + '</div></section>';
 
-  // ---- สถานที่ ----
-  if (S.mode === 'delivery') {
+  // ---- 2) ส่งที่ไหน ----
+  if (!pickup) {
     const loc = d.locations.find((l) => l.name === S.location);
-    html += '<section class="card"><div class="sec-head"><h2 class="sec-title">สถานที่ส่ง</h2>' +
+    html += '<section class="card"' + (d.shop.pickup_enabled ? '' : ' id="sec-slot"') + '><div class="sec-head"><h2 class="sec-title">สถานที่ส่ง</h2>' +
       (loc ? '<span class="pill ' + (loc.delivery_fee ? '' : 'ok') + '">' + (loc.delivery_fee ? 'ค่าส่ง ' + fmt(loc.delivery_fee) + ' บาท' : 'ส่งฟรี') + '</span>' : '') +
       '</div><div class="select-wrap ' + (loc ? 'on' : '') + '"><select data-change="location"><option value="">— เลือกสถานที่ส่ง —</option>' +
       d.locations.map((l) => '<option value="' + h(l.name) + '"' + (l.name === S.location ? ' selected' : '') + '>' + h(l.name) + '</option>').join('') +
       '</select></div><label class="lbl">รายละเอียดเพิ่มเติม <span class="muted">(ไม่บังคับ)</span></label>' +
       '<input class="inp" data-field="locationNote" maxlength="200" placeholder="ระบุหน่วยงาน / ชั้น / จุดสังเกต" value="' + h(S.locationNote) + '"></section>';
   }
+
+  // ---- 3) วันและเวลา ----
+  const need = cups();
+  html += '<section class="card"><h2 class="sec-title">' + (pickup ? 'วันและเวลามารับ' : 'วันและรอบส่ง') + '</h2>';
+  html += '<div class="chips days">' + d.days.map((x, i) => {
+    const open = x.slots.some((s) => s.open);
+    const sub = /^(วันนี้|พรุ่งนี้)$/.test(x.label) ? shortDate(x.date) : '';
+    const main = sub ? x.label : x.label.replace(/ \d+ \S+$/, '');
+    const date = sub || x.label.replace(/^\S+ /, '');
+    return '<button class="day ' + (i === S.dayIdx ? 'on ' : '') + (open ? '' : 'closed') + '"' + (open ? '' : ' disabled') +
+      ' data-act="day" data-arg="' + i + '"><b>' + h(main) + '</b><small>' + h(open ? date : 'ปิดรับแล้ว') + '</small></button>';
+  }).join('') + '</div>';
+  html += '<div class="slots">' + (day && day.slots.length ? day.slots.map((s) => {
+    let status, cls = '';
+    if (!s.open) status = s.remaining <= 0 ? 'เต็มแล้ว' : 'ปิดรับแล้ว';
+    else if (need > s.remaining) { status = 'เหลือ ' + s.remaining + ' แก้ว · ไม่พอ'; cls = 'low'; }
+    else { status = 'เหลือ ' + s.remaining + ' แก้ว'; if (s.remaining <= 5) cls = 'low'; }
+    return '<button class="slot ' + (s.time === S.slotTime ? 'on' : '') + '" ' + (s.open ? '' : 'disabled') + ' data-act="slot" data-arg="' + h(s.time) + '">' +
+      '<span class="radio"></span><span class="slot-main"><b>' + (pickup ? 'มารับได้ ' : '') + h(s.time) + ' น.</b>' +
+      '<small>' + (s.open || s.remaining <= 0 ? 'สั่งได้ถึง ' + h(s.cutoff) + ' น.' : 'ปิดรับตั้งแต่ ' + h(s.cutoff) + ' น.') + '</small></span>' +
+      '<span class="slot-left ' + cls + '">' + status + '</span></button>';
+  }).join('') : '<p class="empty">ยังไม่มีรอบเปิดรับ</p>') + '</div>' +
+    (d.days.every((x) => !x.slots.some((s) => s.open)) ? '<div class="hint">ตอนนี้ปิดรับออเดอร์ทุกรอบแล้ว ลองใหม่พรุ่งนี้นะคะ</div>' : '') +
+    '</section>';
 
   // ---- สั่งซ้ำ ----
   const last = d.lastOrder;
@@ -558,11 +603,22 @@ function viewCheckout() {
     '<input class="inp" type="tel" inputmode="tel" maxlength="12" data-field="phone" placeholder="08x-xxx-xxxx" value="' + h(S.phone) + '">' +
     '<div class="hint">ร้านจะโทรหาเมื่อหาที่ส่งไม่เจอ หรือมีเรื่องเกี่ยวกับออเดอร์ค่ะ</div></section>';
 
+  const pi = pointsInfo();
+  if (pi.enabled) {
+    html += '<section class="card"><div class="sec-head"><h2 class="sec-title">แต้มสะสม</h2><span class="pill">★ ' + fmt(pi.have) + ' แต้ม</span></div>' +
+      (pi.can
+        ? '<button class="opt ' + (S.usePoints ? 'on' : '') + '" data-act="togglePoints"><span class="check"></span>' +
+          '<span>ใช้ ' + fmt(pi.need) + ' แต้ม ลด ' + fmt(pi.off) + ' บาท</span></button>' +
+          '<div class="hint">ใช้ร่วมกับโค้ดส่วนลดไม่ได้ · ถ้ายกเลิกออเดอร์ ระบบจะคืนแต้มให้</div>'
+        : '<div class="hint">สะสมอีก ' + fmt(pi.need - pi.have) + ' แต้ม แลกส่วนลด ' + fmt(pi.off) + ' บาทได้ · ได้แต้มเมื่อร้านยืนยันการชำระเงินแล้ว</div>') +
+      '</section>';
+  }
+
   html += '<section class="card"><h2 class="sec-title">โค้ดส่วนลด</h2><div class="inline">' +
-    '<input class="inp" data-field="couponInput" placeholder="กรอกโค้ด" autocapitalize="characters" value="' + h(S.couponInput) + '">' +
+    '<input class="inp" data-field="couponInput" placeholder="' + (S.usePoints ? 'ใช้แต้มอยู่ ใช้โค้ดไม่ได้' : 'กรอกโค้ด') + '" autocapitalize="characters" value="' + h(S.couponInput) + '"' + (S.usePoints ? ' disabled' : '') + '>' +
     (S.couponCode
       ? '<button class="btn ghost" data-act="removeCoupon">ลบ</button>'
-      : '<button class="btn soft" data-act="applyCoupon"' + (S.busy ? ' disabled' : '') + '>ใช้โค้ด</button>') +
+      : '<button class="btn soft" data-act="applyCoupon"' + (S.busy || S.usePoints ? ' disabled' : '') + '>ใช้โค้ด</button>') +
     '</div>' + (S.couponMsg ? '<div class="msg ' + (S.couponMsg.ok ? 'ok' : 'err') + '">' + h(S.couponMsg.text) + '</div>' : '') + '</section>';
 
   html += '<section class="card"><h2 class="sec-title">ชำระเงิน</h2><span class="paychip">โอนพร้อมเพย์</span>' +
@@ -573,7 +629,7 @@ function viewCheckout() {
 
   html += '<section class="card"><h2 class="sec-title">สรุปรายการ</h2>' +
     '<div class="kv"><span>ค่าเครื่องดื่ม (' + cups() + ' แก้ว)</span><span>' + fmt(t.subtotal) + ' บาท</span></div>' +
-    (t.discount ? '<div class="kv"><span>ส่วนลด ' + h(S.couponCode) + '</span><span>-' + fmt(t.discount) + ' บาท</span></div>' : '') +
+    (t.discount ? '<div class="kv"><span>' + (S.usePoints ? 'แลก ' + fmt(pi.need) + ' แต้ม' : 'ส่วนลด ' + h(S.couponCode)) + '</span><span>-' + fmt(t.discount) + ' บาท</span></div>' : '') +
     (S.mode === 'delivery' ? '<div class="kv"><span>ค่าจัดส่ง</span><span>' + (t.fee ? fmt(t.fee) + ' บาท' : 'ส่งฟรี') + '</span></div>' : '') +
     '<div class="kv total"><span>รวมทั้งสิ้น</span><span>' + fmt(t.total) + ' บาท</span></div></section>';
   return html;
@@ -619,12 +675,17 @@ function viewMember() {
   if (!m) return html + '<div class="center" style="min-height:40vh"><div><div class="spin"></div>กำลังโหลด...</div></div>';
 
   const goal = m.points_to_redeem || 10;
-  const prog = Math.min(100, Math.round((m.points % goal) / goal * 100)) || (m.points && m.points % goal === 0 ? 100 : 0);
+  const pts = Math.max(0, m.points || 0);
+  const prog = Math.min(100, Math.round(pts / goal * 100));
   html += '<div class="mcard"><div class="mcard-top"><div><b>คุณ' + h(m.name) + '</b>' +
     (m.joined_at ? '<div><small>สมาชิกตั้งแต่ ' + h(m.joined_at) + '</small></div>' : '') + '</div><span class="badge">สมาชิก</span></div>' +
-    '<div class="big">' + fmt(m.points) + '</div><div>แต้มสะสม</div>' +
+    '<div class="big">' + fmt(m.points) + '</div><div>แต้มสะสม' +
+    (m.pending_points ? ' <small>(+' + fmt(m.pending_points) + ' รอร้านยืนยันการชำระเงิน)</small>' : '') + '</div>' +
     '<div class="progress"><i style="width:' + prog + '%"></i></div>' +
-    '<small>ทุก 1 แก้วรับ ' + (m.points_per_cup || 1) + ' แต้ม · สะสมครบ ' + goal + ' แต้ม แลกเป็นส่วนลดได้</small></div>';
+    '<small>' + (pts >= goal
+      ? 'แต้มครบแล้ว! ใช้ ' + goal + ' แต้ม ลด ' + fmt(m.redeem_discount) + ' บาท ได้ตอนสั่งครั้งหน้า'
+      : 'ทุก 1 แก้วรับ ' + (m.points_per_cup || 1) + ' แต้ม · ครบ ' + goal + ' แต้ม ลด ' + fmt(m.redeem_discount) + ' บาท') +
+    '</small></div>';
 
   html += '<div class="stats"><div><b>' + fmt(m.total_orders) + '</b><small>ออเดอร์</small></div>' +
     '<div><b>' + fmt(m.total_cups) + '</b><small>แก้วสะสม</small></div>' +
@@ -645,6 +706,8 @@ function viewMember() {
         '<span class="pill ' + stCls + '">' + h(STATUS[o.status] || o.status) + '</span>' +
         (o.status !== 'cancelled' ? '<span class="pill ' + payCls + '">' + h(PAY[o.pay_status] || o.pay_status) + '</span>' : '') +
         (o.coupon_code ? '<span class="pill gray">' + h(o.coupon_code) + ' -' + fmt(o.discount) + '</span>' : '') +
+        (o.points_used ? '<span class="pill gray">แลก ' + fmt(o.points_used) + ' แต้ม</span>' : '') +
+        (o.points_earned ? '<span class="pill ok">+' + fmt(o.points_earned) + ' แต้ม</span>' : '') +
         (o.can_cancel ? '<button class="link" data-act="cancelOrder" data-arg="' + h(o.order_id) + '">ยกเลิก</button>' : '') +
         '</div></div>';
     }).join('') : '<p class="empty">ยังไม่มีประวัติการสั่ง</p>') + '</section>';
@@ -801,7 +864,14 @@ const ACT = {
     }
     go('checkout');
   },
+  togglePoints: () => {
+    if (!S.usePoints && S.couponCode) return toast('ลบโค้ดส่วนลดก่อน ถึงจะใช้แต้มได้นะคะ');
+    S.usePoints = !S.usePoints;
+    if (S.usePoints) { S.couponInput = ''; S.couponMsg = null; }
+    render();
+  },
   applyCoupon: async () => {
+    if (S.usePoints) return toast('ใช้แต้มอยู่ ใช้โค้ดพร้อมกันไม่ได้ค่ะ');
     const code = S.couponInput.trim().toUpperCase();
     if (!code) return toast('กรอกโค้ดก่อนนะคะ');
     S.busy = true; render();
@@ -863,7 +933,7 @@ async function submitOrder() {
     const day = currentDay();
     S.result = Object.assign({ slot_label: day ? day.label : r.slot_date }, r);
     S.cart = []; cartChanged();
-    S.couponCode = ''; S.couponInput = ''; S.couponMsg = null; S.quote = null; S.note = '';
+    S.couponCode = ''; S.couponInput = ''; S.couponMsg = null; S.quote = null; S.note = ''; S.usePoints = false;
     S.sent = '';
     S.busy = false;
     go('done');
@@ -907,6 +977,7 @@ async function loadInit(silent) {
     } else {
       ensureSlot();
     }
+    if (S.usePoints && !pointsInfo().can) S.usePoints = false;
     if (silent && S.view !== 'loading') render();
   } catch (e) {
     if (!silent) throw e;
