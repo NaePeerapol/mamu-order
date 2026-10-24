@@ -720,7 +720,10 @@ function viewDone() {
 
   let sentMsg = '';
   if (S.sent === 'ok') sentMsg = '<div class="msg ok">ส่งใบยืนยันเข้าแชทแล้ว ✓</div>';
-  else if (S.sent === 'fail') sentMsg = '<div class="msg err">ส่งข้อความเข้าแชทไม่สำเร็จ พิมพ์ "' + h(r.order_id) + '" ในแชทเพื่อดูใบยืนยันได้ค่ะ</div>';
+  else if (S.sent === 'fail' && d.shop.oa_id) sentMsg = '<div class="msg muted">' + (cash || !(r.total > 0)
+      ? 'อยากได้ใบยืนยันในแชท กดปุ่ม "เปิดแชทร้าน" ด้านล่าง แล้วกดส่งข้อความได้เลยค่ะ'
+      : 'กดปุ่ม "เปิดแชทร้าน" ด้านล่าง แล้วกดส่งข้อความ จะได้ใบยืนยัน จากนั้นส่งรูปสลิปในแชทนั้นได้เลยค่ะ') + '</div>';
+  else if (S.sent === 'fail') sentMsg = '<div class="msg err">ส่งข้อความเข้าแชทไม่สำเร็จ พิมพ์ "' + h(r.order_id) + '" ในแชทของร้านเพื่อดูใบยืนยันได้ค่ะ</div>';
   else if (S.sent === 'skip') sentMsg = '<div class="msg muted">' + (DEV ? 'โหมดทดสอบ: ไม่ได้ส่งข้อความเข้า LINE' : 'เปิดนอกแอป LINE: พิมพ์ "' + h(r.order_id) + '" ในแชทของร้านเพื่อดูใบยืนยัน') + '</div>';
 
   html += '<section class="card">' + (r.table
@@ -731,7 +734,8 @@ function viewDone() {
     '<div class="kv total"><span>ยอดรวม</span><span>' + fmt(r.total) + ' บาท</span></div>' + sentMsg + '</section>';
 
   html += '<div style="padding:16px 12px;display:grid;gap:10px">' +
-    (!DEV && window.liff && liff.isInClient && liff.isInClient() ? '<button class="btn primary block" data-act="closeLiff">' + (cash || !(r.total > 0) ? 'กลับไปแชท' : 'กลับไปแชทเพื่อส่งสลิป') + '</button>' : '') +
+    (S.sent === 'fail' && d.shop.oa_id ? '<button class="btn primary block" data-act="openChat">📩 เปิดแชทร้าน รับใบยืนยัน' + (cash || !(r.total > 0) ? '' : ' / ส่งสลิป') + '</button>' :
+    !DEV && window.liff && liff.isInClient && liff.isInClient() ? '<button class="btn primary block" data-act="closeLiff">' + (cash || !(r.total > 0) ? 'กลับไปแชท' : 'กลับไปแชทเพื่อส่งสลิป') + '</button>' : '') +
     '<button class="btn ghost block" data-act="go" data-arg="member">ดูประวัติการสั่ง</button>' +
     '<button class="btn ghost block" data-act="go" data-arg="order">สั่งเพิ่ม</button></div>';
   return html;
@@ -959,6 +963,11 @@ const ACT = {
   removeCoupon: () => { S.couponCode = ''; S.couponInput = ''; S.quote = null; S.couponMsg = null; render(); },
   submit: submitOrder,
   closeLiff: () => { try { liff.closeWindow(); } catch (e) {} },
+  /** เปิดแชท OA พร้อมพิมพ์เลขออเดอร์ไว้ให้ ลูกค้ากดส่ง → bot reply ใบยืนยัน (ฟรี) */
+  openChat: () => {
+    const url = 'https://line.me/R/oaMessage/' + encodeURIComponent(S.data.shop.oa_id) + '/?' + encodeURIComponent(S.result.confirm_text);
+    try { liff.openWindow({ url: url, external: false }); } catch (e) { location.href = url; }
+  },
   cancelOrder: (id) => {
     S.sheet = {
       type: 'confirm', title: 'ยกเลิกออเดอร์?', text: id + ' จะถูกยกเลิก และแต้มของออเดอร์นี้จะถูกหักคืน', yes: 'ยกเลิกออเดอร์',
@@ -1020,6 +1029,9 @@ async function submitOrder() {
 
 async function sendConfirm(r) {
   if (DEV || !window.liff || !liff.isInClient()) { S.sent = 'skip'; render(); return; }
+  // เปิดจาก QR / กล้อง (ไม่ได้อยู่ในห้องแชทกับร้าน) → sendMessages ใช้ไม่ได้ ให้กดเปิดแชทแทน
+  const ctx = (liff.getContext && liff.getContext()) || {};
+  if (ctx.type && ctx.type !== 'utou') { S.sent = 'fail'; render(); return; }
   try {
     await liff.sendMessages([{ type: 'text', text: r.confirm_text }]);
     S.sent = 'ok';
