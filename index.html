@@ -196,6 +196,17 @@ textarea.inp { min-height: 72px; resize: vertical; }
 .line-main small { display: block; color: var(--muted); }
 .line-price { min-width: 48px; text-align: right; font-weight: 600; }
 .link { color: var(--brand); font-size: 13px; font-weight: 600; }
+.table-card { display: flex; align-items: center; gap: 14px; background: var(--soft); border: 1.5px solid var(--brand); }
+.table-ic { font-size: 34px; line-height: 1; }
+.table-card b { display: block; font-size: 18px; }
+.table-card small { color: var(--muted); }
+.table-no { margin-left: auto; text-align: center; background: var(--brand); color: #fff; border-radius: 12px; padding: 6px 12px; min-width: 64px; }
+.table-no small { color: rgba(255,255,255,.85); font-size: 11px; }
+.table-no b { font-size: 24px; line-height: 1.1; }
+.hint.warn { background: #fdecee; color: var(--brand); }
+.cash-box { text-align: center; padding: 8px 0; }
+.cash-box .amount { margin: 6px 0; }
+.cash-box .qr-top { background: #2e7d32; }
 .paychip { display: inline-flex; padding: 8px 16px; border-radius: 999px; background: var(--brand); color: #fff; font-weight: 600; font-size: 14px; }
 
 /* ---------- done ---------- */
@@ -271,6 +282,7 @@ const S = {
   data: null, view: 'loading', error: '',
   mode: 'delivery', dayIdx: 0, slotTime: null,
   location: '', locationNote: '',
+  tableCode: '', payMethod: 'promptpay',
   cart: [],
   phone: '', couponInput: '', couponCode: '', couponMsg: null, quote: null, note: '', usePoints: false,
   sheet: null, busy: false, result: null, sent: '', member: null, memberErr: '',
@@ -292,6 +304,9 @@ const menuById = (id) => S.data.menu.find((m) => m.menu_id === id);
 const groupById = (id) => S.data.optionGroups.find((g) => g.group_id === id);
 const currentDay = () => S.data.days[S.dayIdx];
 const cleanPhone = (p) => String(p || '').replace(/\D/g, '');
+/** เปิดจาก QR ที่โต๊ะ (?table=xxx) และรหัสโต๊ะถูกต้อง */
+const isTable = () => !!(S.data && S.data.table && !S.data.table.invalid);
+const tableHours = (t) => t.open_time || t.close_time ? (t.open_time || '00:00') + '–' + (t.close_time || '24:00') + ' น.' : '';
 
 function imgUrl(u) {
   if (!u) return '';
@@ -403,11 +418,11 @@ function restoreCart() {
   });
 }
 const cups = () => S.cart.reduce((n, i) => n + i.qty, 0);
-const cartSig = () => JSON.stringify([S.cart.map((i) => [i.key, i.qty]), S.mode, S.location, S.couponCode]);
+const cartSig = () => JSON.stringify([S.cart.map((i) => [i.key, i.qty]), isTable() ? 'table' : S.mode, S.location, S.couponCode]);
 
 function totals() {
   const subtotal = S.cart.reduce((n, i) => n + i.unit * i.qty, 0);
-  const loc = S.mode === 'delivery' ? S.data.locations.find((l) => l.name === S.location) : null;
+  const loc = !isTable() && S.mode === 'delivery' ? S.data.locations.find((l) => l.name === S.location) : null;
   const fee = loc ? loc.delivery_fee : 0;
   const q = S.quote && S.quote.sig === cartSig() ? S.quote : null;
   const discount = S.usePoints ? Math.min(S.data.shop.redeem_discount || 0, subtotal) : (q ? q.discount : 0);
@@ -424,6 +439,17 @@ function pointsInfo() {
 
 function orderPayload() {
   const day = currentDay();
+  if (isTable()) {
+    return {
+      items: S.cart.map((i) => ({ menu_id: i.menu_id, qty: i.qty, options: i.options })),
+      table: S.data.table.code,
+      pay_method: S.payMethod,
+      phone: cleanPhone(S.phone),
+      coupon_code: S.usePoints ? '' : S.couponCode,
+      use_points: S.usePoints,
+      note: S.note,
+    };
+  }
   return {
     items: S.cart.map((i) => ({ menu_id: i.menu_id, qty: i.qty, options: i.options })),
     fulfillment: S.mode,
@@ -460,6 +486,7 @@ function pickFirstOpenDay() {
 /* ---------------- validation ---------------- */
 function checkOrderInfo() {
   if (!S.cart.length) return 'ยังไม่ได้เลือกเมนู';
+  if (isTable()) return S.data.table.open ? '' : 'ตอนนี้ยังไม่เปิดรับออเดอร์จากโต๊ะค่ะ';
   if (!S.slotTime) return 'กรุณาเลือกรอบส่งที่ยังเปิดรับ';
   if (S.mode === 'delivery' && !S.location) return 'กรุณาเลือกสถานที่ส่ง';
   return '';
@@ -506,12 +533,28 @@ function viewOrder() {
 
   let html = hero();
   const pickup = S.mode === 'pickup';
-  html += '<nav class="tabs"><button class="on" data-act="jump" data-arg="sec-slot">การรับ</button>' +
+  const table = isTable() ? d.table : null;
+  html += '<nav class="tabs"><button class="on" data-act="jump" data-arg="sec-slot">' + (table ? 'โต๊ะ' : 'การรับ') + '</button>' +
     (best.length ? '<button data-act="jump" data-arg="sec-best">ขายดี</button>' : '') +
     cats.map((c, i) => '<button data-act="jump" data-arg="sec-cat-' + i + '">' + h(c) + '</button>').join('') +
     '</nav>';
 
+  if (table) {
+    // ---- สั่งที่โต๊ะ (เปิดจาก QR) ----
+    html += '<section class="card table-card" id="sec-slot"><span class="table-ic">🍽️</span><div><b>' + h(table.place) + '</b>' +
+      '<small>สั่งแล้วร้านจะทำและนำไปเสิร์ฟที่โต๊ะ</small></div>' +
+      '<div class="table-no"><small>โต๊ะ</small><b>' + h(table.table_no) + '</b></div></section>';
+    if (!table.open) {
+      html += '<section class="card"><div class="hint warn">ตอนนี้ยังไม่เปิดรับออเดอร์จากโต๊ะ' +
+        (tableHours(table) ? ' (เปิด ' + h(tableHours(table)) + ')' : '') + ' ดูเมนูไว้ก่อนได้นะคะ</div></section>';
+    }
+  }
+  if (d.table && d.table.invalid) {
+    html += '<section class="card"><div class="hint warn">ไม่พบโต๊ะจาก QR นี้ ถ้าอยู่ที่ร้านให้แจ้งพนักงานนะคะ · ตอนนี้สั่งแบบส่ง/มารับได้ตามปกติ</div></section>';
+  }
+
   // ---- 1) รับยังไง ----
+  if (!table) {
   if (d.shop.pickup_enabled) {
     const fees = d.locations.map((l) => l.delivery_fee);
     const feeTxt = !fees.length ? '' : Math.max.apply(null, fees) === 0 ? 'ส่งฟรี' : (Math.min.apply(null, fees) === 0 ? 'ส่งฟรีบางจุด' : 'มีค่าส่ง');
@@ -556,6 +599,7 @@ function viewOrder() {
   }).join('') : '<p class="empty">ยังไม่มีรอบเปิดรับ</p>') + '</div>' +
     (d.days.every((x) => !x.slots.some((s) => s.open)) ? '<div class="hint">ตอนนี้ปิดรับออเดอร์ทุกรอบแล้ว ลองใหม่พรุ่งนี้นะคะ</div>' : '') +
     '</section>';
+  } // end !table
 
   // ---- สั่งซ้ำ ----
   const last = d.lastOrder;
@@ -592,6 +636,10 @@ function viewCheckout() {
   const d = S.data, day = currentDay(), t = totals();
   let html = hero();
 
+  if (isTable()) {
+    html += '<section class="card table-card"><span class="table-ic">🍽️</span><div><b>' + h(d.table.place) + '</b>' +
+      '<small>ร้านจะนำไปเสิร์ฟที่โต๊ะ</small></div><div class="table-no"><small>โต๊ะ</small><b>' + h(d.table.table_no) + '</b></div></section>';
+  } else
   html += '<section class="card"><div class="sec-head"><h2 class="sec-title">' + (S.mode === 'pickup' ? 'มารับที่ร้าน' : 'จัดส่งถึงที่') +
     '</h2><button class="link" data-act="go" data-arg="order">แก้ไข</button></div>' +
     '<div class="kv"><span>วันที่</span><span>' + h(day ? day.label : '-') + '</span></div>' +
@@ -606,9 +654,9 @@ function viewCheckout() {
       stepper('cq', i.qty, i.key, true) + '<div class="line-price">' + fmt(i.unit * i.qty) + '</div></div>'
     ).join('') : '<p class="empty">ตะกร้าว่าง</p>') + '</section>';
 
-  html += '<section class="card"><h2 class="sec-title">เบอร์โทร</h2>' +
+  html += '<section class="card"><h2 class="sec-title">เบอร์โทร' + (isTable() ? ' <span class="muted"><small>(ไม่บังคับ)</small></span>' : '') + '</h2>' +
     '<input class="inp" type="tel" inputmode="tel" maxlength="12" data-field="phone" placeholder="08x-xxx-xxxx" value="' + h(S.phone) + '">' +
-    '<div class="hint">ร้านจะโทรหาเมื่อหาที่ส่งไม่เจอ หรือมีเรื่องเกี่ยวกับออเดอร์ค่ะ</div></section>';
+    '<div class="hint">' + (isTable() ? 'ใส่ไว้ก็ได้ เผื่อร้านต้องติดต่อเรื่องออเดอร์ค่ะ' : 'ร้านจะโทรหาเมื่อหาที่ส่งไม่เจอ หรือมีเรื่องเกี่ยวกับออเดอร์ค่ะ') + '</div></section>';
 
   const pi = pointsInfo();
   if (pi.enabled) {
@@ -628,6 +676,13 @@ function viewCheckout() {
       : '<button class="btn soft" data-act="applyCoupon"' + (S.busy || S.usePoints ? ' disabled' : '') + '>ใช้โค้ด</button>') +
     '</div>' + (S.couponMsg ? '<div class="msg ' + (S.couponMsg.ok ? 'ok' : 'err') + '">' + h(S.couponMsg.text) + '</div>' : '') + '</section>';
 
+  if (isTable()) {
+    const cash = S.payMethod === 'cash';
+    html += '<section class="card"><h2 class="sec-title">ชำระเงิน</h2><div class="modes">' +
+      '<button class="mode ' + (!cash ? 'on' : '') + '" data-act="pay" data-arg="promptpay"><span class="mode-ic">📱</span><b>โอนพร้อมเพย์</b><small>สแกน QR แล้วส่งสลิป</small></button>' +
+      '<button class="mode ' + (cash ? 'on' : '') + '" data-act="pay" data-arg="cash"><span class="mode-ic">💵</span><b>เงินสด</b><small>จ่ายพนักงานตอนเสิร์ฟ</small></button></div>' +
+      '<div class="hint">' + (cash ? 'เตรียมเงินสดไว้จ่ายพนักงานตอนนำเครื่องดื่มไปเสิร์ฟนะคะ' : 'กดยืนยันแล้วจะได้ QR พร้อมเพย์ตามยอด โอนแล้วส่งสลิปในแชท LINE ของร้านนะคะ') + '</div></section>';
+  } else
   html += '<section class="card"><h2 class="sec-title">ชำระเงิน</h2><span class="paychip">โอนพร้อมเพย์</span>' +
     '<div class="hint">กดยืนยันแล้วจะได้ QR พร้อมเพย์ตามยอด โอนแล้วส่งสลิปในแชท LINE ของร้านนะคะ</div></section>';
 
@@ -637,7 +692,7 @@ function viewCheckout() {
   html += '<section class="card"><h2 class="sec-title">สรุปรายการ</h2>' +
     '<div class="kv"><span>ค่าเครื่องดื่ม (' + cups() + ' แก้ว)</span><span>' + fmt(t.subtotal) + ' บาท</span></div>' +
     (t.discount ? '<div class="kv"><span>' + (S.usePoints ? 'แลก ' + fmt(pi.need) + ' แต้ม' : 'ส่วนลด ' + h(S.couponCode)) + '</span><span>-' + fmt(t.discount) + ' บาท</span></div>' : '') +
-    (S.mode === 'delivery' ? '<div class="kv"><span>ค่าจัดส่ง</span><span>' + (t.fee ? fmt(t.fee) + ' บาท' : 'ส่งฟรี') + '</span></div>' : '') +
+    (!isTable() && S.mode === 'delivery' ? '<div class="kv"><span>ค่าจัดส่ง</span><span>' + (t.fee ? fmt(t.fee) + ' บาท' : 'ส่งฟรี') + '</span></div>' : '') +
     '<div class="kv total"><span>รวมทั้งสิ้น</span><span>' + fmt(t.total) + ' บาท</span></div></section>';
   return html;
 }
@@ -648,7 +703,12 @@ function viewDone() {
   let html = '<div class="done-head"><div class="done-ic">✓</div><h1>สั่งซื้อสำเร็จ</h1>' +
     '<div class="muted">เลขที่ ' + h(r.order_id) + '</div></div>';
 
-  if (r.total > 0 && ppId) {
+  const cash = r.pay_method === 'cash';
+  if (r.total > 0 && cash) {
+    html += '<section class="card"><div class="cash-box"><div class="qr-top">💵 ชำระเงินสด</div>' +
+      '<div class="amount">' + Number(r.total).toLocaleString('th-TH', { minimumFractionDigits: 2 }) + ' บาท</div>' +
+      '<div class="muted">จ่ายพนักงานตอนนำเครื่องดื่มไปเสิร์ฟที่โต๊ะได้เลยค่ะ</div></div></section>';
+  } else if (r.total > 0 && ppId) {
     html += '<section class="card"><div class="qr-wrap"><div class="qr-top">PromptPay</div><div id="qr"></div>' +
       '<div class="amount">' + Number(r.total).toLocaleString('th-TH', { minimumFractionDigits: 2 }) + ' บาท</div>' +
       '<div class="muted">พร้อมเพย์ ' + h(ppId) + ' · ' + h(d.shop.name) + '</div></div>' +
@@ -663,13 +723,15 @@ function viewDone() {
   else if (S.sent === 'fail') sentMsg = '<div class="msg err">ส่งข้อความเข้าแชทไม่สำเร็จ พิมพ์ "' + h(r.order_id) + '" ในแชทเพื่อดูใบยืนยันได้ค่ะ</div>';
   else if (S.sent === 'skip') sentMsg = '<div class="msg muted">' + (DEV ? 'โหมดทดสอบ: ไม่ได้ส่งข้อความเข้า LINE' : 'เปิดนอกแอป LINE: พิมพ์ "' + h(r.order_id) + '" ในแชทของร้านเพื่อดูใบยืนยัน') + '</div>';
 
-  html += '<section class="card"><div class="kv"><span>รอบ</span><span>' + h(r.slot_label || r.slot_date) + ' · ' + h(r.slot_time) + ' น.</span></div>' +
+  html += '<section class="card">' + (r.table
+    ? '<div class="kv"><span>โต๊ะ</span><span>' + h(r.table.table_no) + '</span></div>'
+    : '<div class="kv"><span>รอบ</span><span>' + h(r.slot_label || r.slot_date) + ' · ' + h(r.slot_time) + ' น.</span></div>') +
     '<div class="kv"><span>สถานที่</span><span>' + h(r.location) + '</span></div>' +
     '<div class="kv"><span>จำนวน</span><span>' + r.cups + ' แก้ว</span></div>' +
     '<div class="kv total"><span>ยอดรวม</span><span>' + fmt(r.total) + ' บาท</span></div>' + sentMsg + '</section>';
 
   html += '<div style="padding:16px 12px;display:grid;gap:10px">' +
-    (!DEV && window.liff && liff.isInClient && liff.isInClient() ? '<button class="btn primary block" data-act="closeLiff">กลับไปแชทเพื่อส่งสลิป</button>' : '') +
+    (!DEV && window.liff && liff.isInClient && liff.isInClient() ? '<button class="btn primary block" data-act="closeLiff">' + (cash || !(r.total > 0) ? 'กลับไปแชท' : 'กลับไปแชทเพื่อส่งสลิป') + '</button>' : '') +
     '<button class="btn ghost block" data-act="go" data-arg="member">ดูประวัติการสั่ง</button>' +
     '<button class="btn ghost block" data-act="go" data-arg="order">สั่งเพิ่ม</button></div>';
   return html;
@@ -807,6 +869,7 @@ const ACT = {
   mode: (m) => { S.mode = m; store.set('mode', m); if (S.couponCode) requote(); render(); },
   day: (i) => { S.dayIdx = Number(i); ensureSlot(); render(); },
   slot: (t) => { S.slotTime = t; render(); },
+  pay: (m) => { S.payMethod = m === 'cash' ? 'cash' : 'promptpay'; store.set('payMethod', S.payMethod); render(); },
   open: (id) => {
     const m = menuById(id);
     if (!m) return;
@@ -853,7 +916,7 @@ const ACT = {
       if (m) { addLine(buildLine(m, pickedFromOptions(m, i.options), i.qty)); n++; }
     });
     if (!S.phone && last.phone) S.phone = last.phone;
-    if (last.fulfillment === 'delivery' && S.data.locations.some((l) => l.name === last.location)) {
+    if (!isTable() && last.fulfillment === 'delivery' && S.data.locations.some((l) => l.name === last.location)) {
       S.mode = 'delivery';
       S.location = last.location;
       S.locationNote = last.location_note || S.locationNote;
@@ -928,15 +991,16 @@ function requote() {
 
 async function submitOrder() {
   if (S.busy) return;
-  const err = checkOrderInfo() || (/^0\d{8,9}$/.test(cleanPhone(S.phone)) ? '' : 'กรุณากรอกเบอร์โทรให้ถูกต้อง');
+  const ph = cleanPhone(S.phone);
+  const err = checkOrderInfo() || (/^0\d{8,9}$/.test(ph) || (isTable() && !ph) ? '' : 'กรุณากรอกเบอร์โทรให้ถูกต้อง');
   if (err) return toast(err);
   if (S.couponCode && !(S.quote && S.quote.sig === cartSig())) return toast('กำลังคำนวณส่วนลด ลองกดอีกครั้งนะคะ');
 
   S.busy = true; render();
   try {
     const r = await api('createOrder', orderPayload());
-    store.set('phone', cleanPhone(S.phone));
-    store.set('location', S.location);
+    if (ph) store.set('phone', ph);
+    if (!isTable()) store.set('location', S.location);
     const day = currentDay();
     S.result = Object.assign({ slot_label: day ? day.label : r.slot_date }, r);
     S.cart = []; cartChanged();
@@ -950,7 +1014,7 @@ async function submitOrder() {
     S.busy = false;
     toast(e.message);
     render();
-    if (/รอบ/.test(e.message)) loadInit(true);
+    if (/รอบ|โต๊ะ/.test(e.message)) loadInit(true);
   }
 }
 
@@ -971,7 +1035,7 @@ async function sendConfirm(r) {
  * ===================================================================== */
 async function loadInit(silent) {
   try {
-    const data = await api('init');
+    const data = await api('init', S.tableCode ? { table: S.tableCode } : null);
     const first = !S.data;
     S.data = data;
     if (first) {
@@ -980,6 +1044,7 @@ async function loadInit(silent) {
       const savedLoc = store.get('location') || (data.lastOrder && data.lastOrder.location);
       if (data.locations.some((l) => l.name === savedLoc)) S.location = savedLoc;
       S.phone = store.get('phone') || (data.lastOrder && data.lastOrder.phone) || '';
+      if (store.get('payMethod') === 'cash') S.payMethod = 'cash';
       pickFirstOpenDay();
     } else {
       ensureSlot();
@@ -1017,8 +1082,10 @@ async function boot() {
       if (!liff.isLoggedIn()) { liff.login({ redirectUri: location.href }); return; }
       AUTH = { idToken: liff.getIDToken() };
     }
+    const qs2 = new URLSearchParams(location.search); // อ่านหลัง liff.init (LIFF คืน query ให้ตอนนี้)
+    S.tableCode = (qs2.get('table') || '').trim().slice(0, 20);
     await loadInit(false);
-    const page = new URLSearchParams(location.search).get('page');
+    const page = qs2.get('page');
     go(page === 'member' ? 'member' : 'order');
   } catch (e) {
     console.error(e);
