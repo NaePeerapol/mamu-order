@@ -146,7 +146,8 @@ small { font-size: 12px; }
 .qr-bar { position: sticky; top: 0; z-index: 5; display: flex; gap: 8px; align-items: center; padding: 10px 14px; background: var(--card); border-bottom: 1px solid var(--line); }
 .qr-bar b { flex: 1; }
 .qr-help { margin: 12px 14px; font-size: 13px; color: var(--muted); }
-.qr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; padding: 0 14px 30px; }
+.qr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; padding: 0 14px 14px; }
+.qr-page + .qr-page { border-top: 1px dashed var(--line); padding-top: 14px; }
 .qr-card { background: #fff; border: 2px solid #222; border-radius: 16px; padding: 16px 14px; text-align: center; break-inside: avoid; page-break-inside: avoid; color: #111; }
 .qr-card .qs { font-weight: 700; font-size: 16px; }
 .qr-card .qh { font-size: 20px; font-weight: 700; margin: 4px 0 10px; }
@@ -157,10 +158,14 @@ small { font-size: 12px; }
 .qr-card .qp { font-size: 13px; color: #555; margin-top: 6px; }
 .qr-card .qn { font-size: 11px; color: #777; margin-top: 8px; }
 @media print {
-  body { background: #fff; }
+  body { background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  #app { max-width: none; padding: 0; }
   .qr-bar, .qr-help, #toast, #busy, #sheet { display: none !important; }
-  .qr-grid { grid-template-columns: repeat(2, 1fr); gap: 10mm; padding: 0; }
-  .qr-card { padding: 8mm 6mm; }
+  /* 1 หน้า A4 = 4 ป้าย (2×2) ตายตัว ไม่ให้ป้ายขาดข้ามหน้า */
+  .qr-page { height: 265mm; overflow: hidden; break-after: page; page-break-after: always; border: 0 !important; padding: 0 !important; }
+  .qr-page:last-child { break-after: auto; page-break-after: auto; }
+  .qr-grid { height: 100%; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 8mm; padding: 0; }
+  .qr-card { display: flex; flex-direction: column; justify-content: center; padding: 4mm; }
   .qr-card .qimg img, .qr-card .qimg canvas { width: 55mm !important; height: 55mm !important; }
   @page { size: A4; margin: 12mm; }
 }
@@ -704,11 +709,14 @@ function renderQr() {
     html += '<div class="empty">ยังไม่มีโต๊ะ เพิ่มได้ที่แท็บ tables ใน Sheet (ติ๊ก active)</div>';
   } else {
     html += '<div class="qr-help">' + d.tables.length + ' โต๊ะ · กด "ปริ้น" แล้วเลือกเครื่องพิมพ์ หรือ "บันทึกเป็น PDF" (A4 หน้าละ 4 ป้าย) · ' +
-      'เพิ่ม/ลบโต๊ะได้ที่แท็บ tables ใน Sheet</div><div class="qr-grid">' +
-      d.tables.map((t, i) => '<div class="qr-card"><div class="qs">' + h(d.shop.name) + '</div>' +
+      'เพิ่ม/ลบโต๊ะได้ที่แท็บ tables ใน Sheet</div>';
+    const card = (t, i) => '<div class="qr-card"><div class="qs">' + h(d.shop.name) + '</div>' +
         '<div class="qh">สแกนสั่งเครื่องดื่ม ☕</div><div class="qimg" id="qr' + i + '"></div>' +
         '<div class="qt">โต๊ะ<b>' + h(t.table_no) + '</b></div><div class="qp">' + h(t.place) + '</div>' +
-        '<div class="qn">สแกนด้วยกล้องมือถือ แล้วเปิดใน LINE</div></div>').join('') + '</div>';
+        '<div class="qn">สแกนด้วยกล้องมือถือ แล้วเปิดใน LINE</div></div>';
+    for (let p = 0; p < d.tables.length; p += 4) { // แบ่งหน้าละ 4 ป้าย
+      html += '<div class="qr-page"><div class="qr-grid">' + d.tables.slice(p, p + 4).map((t, j) => card(t, p + j)).join('') + '</div></div>';
+    }
   }
   app.innerHTML = html;
   if (!liffId || !window.QRCode) return;
