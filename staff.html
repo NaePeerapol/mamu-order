@@ -104,16 +104,46 @@ small { font-size: 12px; }
 .row-btns { display: flex; gap: 10px; margin-top: 12px; }
 .opt { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid var(--line); }
 
-#toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 60; background: rgba(30,20,18,.92); color: #fff; padding: 10px 16px; border-radius: 10px; font-size: 14px; max-width: calc(100% - 32px); text-align: center; opacity: 0; pointer-events: none; transition: opacity .2s; }
-#toast.show { opacity: 1; }
+#toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom)); transform: translate(-50%, 16px); z-index: 60; background: rgba(30,20,18,.92); color: #fff; padding: 10px 16px; border-radius: 10px; font-size: 14px; max-width: calc(100% - 32px); text-align: center; opacity: 0; pointer-events: none; transition: opacity .2s, transform .25s cubic-bezier(.2,.8,.3,1); }
+#toast.show { opacity: 1; transform: translate(-50%, 0); }
 .spin { width: 28px; height: 28px; border: 3px solid var(--line); border-top-color: var(--brand); border-radius: 50%; animation: rot .8s linear infinite; margin: 0 auto 10px; }
 @keyframes rot { to { transform: rotate(360deg); } }
+
+/* loading overlay: กันกดซ้ำระหว่างบันทึก */
+#busy { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; background: rgba(243,239,235,.55); backdrop-filter: blur(2px); -webkit-backdrop-filter: blur(2px); opacity: 0; pointer-events: none; transition: opacity .15s; }
+#busy.show { opacity: 1; pointer-events: auto; }
+#busy .box { background: var(--card); border-radius: 16px; padding: 18px 26px; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,.12); transform: scale(.94); transition: transform .2s cubic-bezier(.2,.8,.3,1); }
+#busy.show .box { transform: scale(1); }
+.icon-btn.spinning { animation: rot .8s linear infinite; }
+
+/* animations */
+@keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes sheetUp { from { transform: translateY(100%); } to { transform: none; } }
+@keyframes sheetDown { from { transform: none; } to { transform: translateY(100%); } }
+@keyframes fadeOut { from { opacity: 1; } to { opacity: 0; } }
+@keyframes pulse { 0%, 100% { box-shadow: 0 0 0 4px rgba(139,30,45,.12); } 50% { box-shadow: 0 0 0 10px rgba(139,30,45,.22); } }
+@keyframes pop { 0% { opacity: 0; transform: scale(.96) translateY(-8px); } 60% { opacity: 1; transform: scale(1.01); } 100% { transform: none; } }
+.list.enter .card { animation: rise .32s cubic-bezier(.2,.8,.3,1) both; animation-delay: calc(var(--i, 0) * 35ms); }
+.list.enter .slot-h { animation: fadeIn .3s both; }
+.card.fresh { animation: pop .45s cubic-bezier(.2,.8,.3,1) both, pulse 1.4s ease-in-out .45s 4; }
+.sheet .sheet-bg { animation: fadeIn .2s both; }
+.sheet .sheet-panel { animation: sheetUp .28s cubic-bezier(.2,.8,.3,1) both; }
+.sheet.closing .sheet-bg { animation: fadeOut .18s both; }
+.sheet.closing .sheet-panel { animation: sheetDown .2s ease-in both; }
+.fade-in { animation: fadeIn .3s both; }
+.chip, .day, .seg button, .btn { transition: background-color .15s, color .15s, border-color .15s, transform .1s; }
+.btn:active, .chip:active, .seg button:active { transform: scale(.97); }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
+}
 </style>
 </head>
 <body>
 <div id="app"></div>
 <div id="sheet" class="sheet" hidden><div class="sheet-bg" data-act="closeSheet"></div><div class="sheet-panel" id="sheetPanel"></div></div>
 <div id="toast"></div>
+<div id="busy"><div class="box"><div class="spin"></div><div id="busyText">กำลังบันทึก...</div></div></div>
 
 <script>
 /* =====================================================================
@@ -148,7 +178,8 @@ const store = {
 const S = {
   pin: store.get('pin', ''), data: null, loading: false, error: '',
   date: null, filter: 'all', known: null, fresh: {}, busy: {},
-  sound: store.get('sound', true), paper: store.get('paper', 58),
+  sound: store.get('sound', true), repeat: store.get('repeat', true), paper: store.get('paper', 58),
+  viewKey: '', spinning: false,
   printed: store.get('printed', {}), sheet: null, lastSync: '',
 };
 
@@ -172,19 +203,64 @@ let audioCtx = null;
 function unlockAudio() {
   try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); if (audioCtx.state === 'suspended') audioCtx.resume(); } catch (e) {}
 }
-function ding() {
-  if (!S.sound || !audioCtx) return;
-  const t0 = audioCtx.currentTime;
-  [0, 0.22, 0.44].forEach((dt, i) => {
-    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
-    o.type = 'sine'; o.frequency.value = i === 2 ? 1320 : 880;
-    g.gain.setValueAtTime(0.0001, t0 + dt);
-    g.gain.exponentialRampToValueAtTime(0.5, t0 + dt + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dt + 0.2);
-    o.connect(g).connect(audioCtx.destination);
-    o.start(t0 + dt); o.stop(t0 + dt + 0.22);
-  });
-  try { navigator.vibrate && navigator.vibrate([200, 100, 200]); } catch (e) {}
+/** เสียงเตือน ~2.4 วินาที: ไล่โน้ต 3 ชุด เสียงสองชั้น (ดังกว่าเสียง sine ธรรมดา) */
+function ding(force) {
+  if ((!S.sound && !force) || !audioCtx) return;
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  const t0 = audioCtx.currentTime + 0.02;
+  const master = audioCtx.createGain();
+  master.gain.value = 0.9;
+  const comp = audioCtx.createDynamicsCompressor(); // ดันเสียงให้ดังขึ้นโดยไม่แตก
+  master.connect(comp).connect(audioCtx.destination);
+  const notes = [988, 1319, 1568]; // B5 E6 G6
+  for (let rep = 0; rep < 3; rep++) {
+    notes.forEach((f, i) => {
+      const t = t0 + rep * 0.8 + i * 0.17;
+      [['triangle', f, 1], ['square', f * 2, 0.18]].forEach(([type, freq, vol]) => {
+        const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+        o.type = type; o.frequency.value = freq;
+        g.gain.setValueAtTime(0.0001, t);
+        g.gain.exponentialRampToValueAtTime(vol, t + 0.015);
+        g.gain.exponentialRampToValueAtTime(0.0001, t + 0.32);
+        o.connect(g).connect(master);
+        o.start(t); o.stop(t + 0.34);
+      });
+    });
+  }
+  try { navigator.vibrate && navigator.vibrate([400, 150, 400, 150, 400]); } catch (e) {}
+}
+
+/** เตือนซ้ำทุก ALARM_EVERY วินาทีจนกว่าจะมีคนแตะจอ (สูงสุด ALARM_MAX ครั้ง) */
+const ALARM_EVERY = 6, ALARM_MAX = 20;
+let alarmTimer = null, alarmCount = 0;
+function startAlarm() {
+  ding();
+  if (!S.repeat) return;
+  stopAlarm();
+  alarmCount = 0;
+  alarmTimer = setInterval(() => {
+    if (++alarmCount >= ALARM_MAX) return stopAlarm();
+    ding();
+  }, ALARM_EVERY * 1000);
+}
+function stopAlarm() { if (alarmTimer) { clearInterval(alarmTimer); alarmTimer = null; } }
+
+/* ---------------- loading overlay ---------------- */
+let busyN = 0, busyT = null;
+function showBusy(text) {
+  busyN++;
+  $('#busyText').textContent = text || 'กำลังบันทึก...';
+  clearTimeout(busyT);
+  busyT = setTimeout(() => { if (busyN > 0) $('#busy').classList.add('show'); }, 120); // งานเร็วมากไม่ต้องกระพริบ
+  document.getElementById('busy').style.pointerEvents = 'auto'; // กันกดทันที แม้ยังไม่โชว์
+}
+function hideBusy() {
+  busyN = Math.max(0, busyN - 1);
+  if (busyN) return;
+  clearTimeout(busyT);
+  const b = $('#busy');
+  b.classList.remove('show');
+  b.style.pointerEvents = '';
 }
 let wakeLock = null;
 async function keepAwake() {
@@ -208,6 +284,7 @@ function matches(o, f) {
 async function refresh(manual) {
   if (S.loading) return;
   S.loading = true;
+  if (manual) { S.spinning = true; const b = document.querySelector('[data-act=refresh]'); if (b) b.classList.add('spinning'); }
   try {
     const data = await api('staffOrders');
     const ids = data.orders.map((o) => o.order_id);
@@ -215,8 +292,8 @@ async function refresh(manual) {
       const added = ids.filter((id) => !S.known[id]);
       if (added.length) {
         added.forEach((id) => { S.fresh[id] = true; });
-        ding();
-        toast('🔔 ออเดอร์ใหม่ ' + added.length + ' รายการ');
+        startAlarm();
+        toast('🔔 ออเดอร์ใหม่ ' + added.length + ' รายการ · แตะจอเพื่อหยุดเสียง');
       }
     }
     S.known = {}; ids.forEach((id) => { S.known[id] = true; });
@@ -231,6 +308,7 @@ async function refresh(manual) {
     if (manual || !S.data) toast(e.message);
   } finally {
     S.loading = false;
+    S.spinning = false;
     render();
   }
 }
@@ -238,9 +316,26 @@ async function refresh(manual) {
 /* ---------------- render ---------------- */
 function render() {
   const app = $('#app');
-  if (!S.pin) { app.innerHTML = viewLogin(); return; }
-  if (!S.data) { app.innerHTML = '<div class="empty"><div class="spin"></div>กำลังโหลด...</div>'; return; }
-  app.innerHTML = viewTop() + viewList();
+  if (!S.pin) { app.innerHTML = '<div class="fade-in">' + viewLogin() + '</div>'; S.viewKey = ''; return; }
+  if (!S.data) { app.innerHTML = '<div class="empty fade-in"><div class="spin"></div>กำลังโหลด...</div>'; return; }
+
+  // จำตำแหน่งที่เลื่อนแถบ chips ไว้ ไม่ให้เด้งกลับซ้ายสุดตอนวาดใหม่
+  const scrolls = Array.from(document.querySelectorAll('.top .chips')).map((el) => el.scrollLeft);
+  const key = S.date + '|' + S.filter;
+  const enter = key !== S.viewKey;
+  S.viewKey = key;
+
+  app.innerHTML = viewTop() + '<div class="list' + (enter ? ' enter' : '') + '">' + viewList() + '</div>';
+
+  document.querySelectorAll('.top .chips').forEach((el, i) => {
+    if (scrolls[i] != null) el.scrollLeft = scrolls[i];
+    const on = el.querySelector('.chip.on');
+    if (on) { // ถ้าปุ่มที่เลือกหลุดขอบ เลื่อนให้เห็นแบบนุ่มๆ
+      const l = on.offsetLeft - el.offsetLeft, r = l + on.offsetWidth;
+      if (l < el.scrollLeft) el.scrollTo({ left: l - 14, behavior: 'smooth' });
+      else if (r > el.scrollLeft + el.clientWidth) el.scrollTo({ left: r - el.clientWidth + 14, behavior: 'smooth' });
+    }
+  });
 }
 
 function viewLogin() {
@@ -260,7 +355,7 @@ function viewTop() {
     '<div class="top-main"><b>' + h(d.shop.name) + ' · พนักงาน</b><small>อัปเดต ' + h(S.lastSync) +
     (S.error ? ' · <span style="color:var(--brand)">' + h(S.error) + '</span>' : '') + '</small></div>' +
     '<button class="icon-btn ' + (S.sound ? '' : 'off') + '" data-act="toggleSound" title="เสียงเตือน">' + (S.sound ? '🔔' : '🔕') + '</button>' +
-    '<button class="icon-btn" data-act="refresh" title="รีเฟรช">↻</button>' +
+    '<button class="icon-btn' + (S.spinning ? ' spinning' : '') + '" data-act="refresh" title="รีเฟรช">↻</button>' +
     '<button class="icon-btn" data-act="settings" title="ตั้งค่า">⚙️</button></div>' +
     '<div class="chips">' + d.dates.map((x) => {
       const n = d.orders.filter((o) => o.slot_date === x.date && o.status !== 'cancelled').length;
@@ -280,15 +375,16 @@ function viewList() {
   if (!list.length) return '<div class="empty">ไม่มีออเดอร์' + (S.filter === 'all' ? 'ในวันนี้' : 'ในหมวดนี้') + '</div>';
   const groups = {};
   list.forEach((o) => { (groups[o.slot_time] = groups[o.slot_time] || []).push(o); });
+  let n = 0;
   return Object.keys(groups).sort().map((t) => {
     const g = groups[t];
-    const cups = g.filter((o) => o.status !== 'cancelled').reduce((n, o) => n + o.cups, 0);
+    const cups = g.filter((o) => o.status !== 'cancelled').reduce((s, o) => s + o.cups, 0);
     return '<div class="slot-h"><b>รอบ ' + h(t) + ' น.</b><span class="muted">' + g.length + ' ออเดอร์ · ' + cups + ' แก้ว</span></div>' +
-      g.map(card).join('');
+      g.map((o) => card(o, Math.min(n++, 10))).join('');
   }).join('');
 }
 
-function card(o) {
+function card(o, idx) {
   const busy = S.busy[o.order_id];
   const pay = o.pay_status === 'paid'
     ? '<span class="pill ok">จ่ายแล้ว</span>'
@@ -297,7 +393,7 @@ function card(o) {
   const st = o.status === 'cancelled' ? '<span class="pill">ยกเลิก</span>' : '<span class="pill blue">' + h(STATUS_TH[o.status] || o.status) + '</span>';
   const loc = o.fulfillment === 'pickup' ? 'มารับที่ร้าน' : h(o.location);
 
-  let html = '<div class="card ' + (S.fresh[o.order_id] ? 'fresh ' : '') + (o.status === 'cancelled' ? 'cancelled' : '') + '" data-card="' + h(o.order_id) + '">' +
+  let html = '<div class="card ' + (S.fresh[o.order_id] ? 'fresh ' : '') + (o.status === 'cancelled' ? 'cancelled' : '') + '" style="--i:' + (idx || 0) + '" data-card="' + h(o.order_id) + '">' +
     '<div class="c-top"><div class="seq">' + h(seqOf(o.order_id)) + '</div>' +
     '<div class="c-id">' + h(o.order_id) + '<br>สั่ง ' + h(String(o.created_at).slice(11)) + ' น.</div>' +
     (S.fresh[o.order_id] ? '<span class="new-badge">ใหม่</span>' : '') +
@@ -329,8 +425,24 @@ function card(o) {
 }
 
 /* ---------------- sheet ---------------- */
-function openSheet(html) { S.sheet = true; $('#sheetPanel').innerHTML = html; $('#sheet').hidden = false; }
-function closeSheet() { S.sheet = null; $('#sheet').hidden = true; $('#sheetPanel').innerHTML = ''; }
+let sheetT = null;
+function openSheet(html) {
+  clearTimeout(sheetT);
+  const el = $('#sheet');
+  const wasOpen = !el.hidden && !el.classList.contains('closing');
+  S.sheet = true;
+  $('#sheetPanel').innerHTML = html;
+  el.classList.remove('closing');
+  if (!wasOpen) { el.hidden = false; el.style.animation = 'none'; void el.offsetHeight; el.style.animation = ''; } // เล่นแอนิเมชันใหม่
+}
+function closeSheet() {
+  const el = $('#sheet');
+  if (el.hidden) return;
+  S.sheet = null;
+  el.classList.add('closing');
+  clearTimeout(sheetT);
+  sheetT = setTimeout(() => { el.hidden = true; el.classList.remove('closing'); $('#sheetPanel').innerHTML = ''; }, 200);
+}
 let confirmFn = null;
 function confirmBox(title, text, yes, fn) {
   confirmFn = fn;
@@ -344,17 +456,18 @@ async function update(id, patch, okMsg) {
   const o = S.data.orders.find((x) => x.order_id === id);
   if (!o) return;
   const before = { pay_status: o.pay_status, status: o.status };
-  Object.assign(o, patch);
   S.busy[id] = true; delete S.fresh[id];
-  render();
+  showBusy(patch.pay_status === 'paid' ? 'กำลังยืนยันการชำระเงิน...' : patch.status === 'cancelled' ? 'กำลังยกเลิกออเดอร์...' : 'กำลังบันทึก...');
   try {
     await api('staffUpdate', Object.assign({ order_id: id }, patch));
+    Object.assign(o, patch);
     if (okMsg) toast(okMsg);
   } catch (e) {
     Object.assign(o, before);
     toast(e.message);
   } finally {
     delete S.busy[id];
+    hideBusy();
     render();
   }
 }
@@ -499,8 +612,10 @@ let printOrder = null, printCanvas = null;
 async function openPrint(id) {
   printOrder = S.data.orders.find((o) => o.order_id === id);
   if (!printOrder) return;
+  showBusy('กำลังเตรียมใบออเดอร์...');
   try { await document.fonts.ready; } catch (e) {}
-  printCanvas = drawReceipt(printOrder);
+  await new Promise((r) => setTimeout(r, 30)); // ให้ overlay วาดก่อนเริ่มงานหนัก
+  try { printCanvas = drawReceipt(printOrder); } finally { hideBusy(); }
   const isAndroid = /Android/i.test(navigator.userAgent);
   openSheet('<h3>ปริ้นใบออเดอร์ ' + h(seqOf(id)) + '</h3><div class="muted">กระดาษ ' + S.paper + ' มม. · เปลี่ยนได้ที่ ⚙️</div>' +
     '<div class="preview"><img src="' + printCanvas.toDataURL('image/png') + '" alt=""></div>' +
@@ -538,7 +653,12 @@ const ACT = {
     render(); refresh();
   },
   refresh: () => { unlockAudio(); refresh(true); },
-  toggleSound: () => { S.sound = !S.sound; store.set('sound', S.sound); unlockAudio(); if (S.sound) ding(); render(); },
+  toggleSound: () => {
+    S.sound = !S.sound; store.set('sound', S.sound); unlockAudio();
+    if (S.sound) ding(); else stopAlarm();
+    render();
+    if (S.sheet) ACT.settings();
+  },
   date: (d) => { S.date = d; render(); window.scrollTo(0, 0); },
   filter: (f) => { S.filter = f; render(); },
   paid: (id) => update(id, { pay_status: 'paid' }, 'ยืนยันจ่ายแล้ว ✓ ลูกค้าได้แต้มแล้ว'),
@@ -567,17 +687,21 @@ const ACT = {
       '<div class="opt"><span>ขนาดกระดาษ</span><span><button class="chip ' + (S.paper === 58 ? 'on' : '') + '" data-act="paper" data-arg="58">58 มม.</button> ' +
       '<button class="chip ' + (S.paper === 80 ? 'on' : '') + '" data-act="paper" data-arg="80">80 มม.</button></span></div>' +
       '<div class="opt"><span>เสียงเตือนออเดอร์ใหม่</span><button class="chip ' + (S.sound ? 'on' : '') + '" data-act="toggleSound">' + (S.sound ? 'เปิด' : 'ปิด') + '</button></div>' +
+      '<div class="opt"><span>เตือนซ้ำทุก ' + ALARM_EVERY + ' วิ จนกว่าจะแตะจอ</span><button class="chip ' + (S.repeat ? 'on' : '') + '" data-act="toggleRepeat">' + (S.repeat ? 'เปิด' : 'ปิด') + '</button></div>' +
       '<div class="opt"><span>ทดสอบเสียง</span><button class="chip" data-act="testSound">🔔 ลอง</button></div>' +
+      '<div class="muted" style="font-size:12px">ความดังขึ้นกับระดับเสียงสื่อ (Media) ของมือถือ ตั้งไว้สูงสุดและปิดโหมดเงียบนะ</div>' +
       '<div class="muted" style="font-size:13px;margin-top:10px">เปิดหน้านี้ค้างไว้ ระบบจะเช็คออเดอร์ใหม่ทุก ' + CONFIG.POLL_SECONDS + ' วินาที และพยายามไม่ให้จอดับ</div>' +
       '<div class="row-btns"><button class="btn ghost grow" data-act="logout">ออกจากระบบ</button><button class="btn primary grow" data-act="closeSheet">เสร็จ</button></div>');
   },
   paper: (p) => { S.paper = Number(p); store.set('paper', S.paper); ACT.settings(); },
-  testSound: () => { unlockAudio(); const was = S.sound; S.sound = true; ding(); S.sound = was; },
+  testSound: () => { unlockAudio(); setTimeout(() => ding(true), 50); },
+  toggleRepeat: () => { S.repeat = !S.repeat; store.set('repeat', S.repeat); if (!S.repeat) stopAlarm(); ACT.settings(); },
   logout: () => { S.pin = ''; store.set('pin', ''); S.data = null; S.known = null; closeSheet(); render(); },
 };
 
 document.addEventListener('click', (e) => {
   unlockAudio(); // เบราว์เซอร์ให้เล่นเสียงได้หลังผู้ใช้แตะจอครั้งแรก
+  if (alarmTimer && !e.target.closest('[data-act=testSound]')) { stopAlarm(); toast('ปิดเสียงเตือนแล้ว'); }
   const cardEl = e.target.closest('[data-card]');
   if (cardEl && S.fresh[cardEl.dataset.card]) { delete S.fresh[cardEl.dataset.card]; cardEl.classList.remove('fresh'); }
   const el = e.target.closest('[data-act]');
