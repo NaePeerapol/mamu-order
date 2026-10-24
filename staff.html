@@ -9,6 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
 :root {
   --brand: #8b1e2d; --brand-dark: #6e1622; --soft: #fbeef0;
@@ -136,6 +137,34 @@ small { font-size: 12px; }
 .fade-in { animation: fadeIn .3s both; }
 .chip, .day, .seg button, .btn { transition: background-color .15s, color .15s, border-color .15s, transform .1s; }
 .btn:active, .chip:active, .seg button:active { transform: scale(.97); }
+/* ---------- สั่งที่โต๊ะ ---------- */
+.c-table { display: inline-flex; align-items: center; gap: 8px; margin-top: 4px; padding: 4px 6px 4px 12px; border-radius: 10px; background: var(--soft); color: var(--brand); font-weight: 700; }
+.c-table b { background: var(--brand); color: #fff; border-radius: 8px; padding: 2px 10px; font-size: 20px; }
+.slot-h.table b { color: var(--brand); }
+
+/* ---------- ป้าย QR โต๊ะ ---------- */
+.qr-bar { position: sticky; top: 0; z-index: 5; display: flex; gap: 8px; align-items: center; padding: 10px 14px; background: var(--card); border-bottom: 1px solid var(--line); }
+.qr-bar b { flex: 1; }
+.qr-help { margin: 12px 14px; font-size: 13px; color: var(--muted); }
+.qr-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 14px; padding: 0 14px 30px; }
+.qr-card { background: #fff; border: 2px solid #222; border-radius: 16px; padding: 16px 14px; text-align: center; break-inside: avoid; page-break-inside: avoid; color: #111; }
+.qr-card .qs { font-weight: 700; font-size: 16px; }
+.qr-card .qh { font-size: 20px; font-weight: 700; margin: 4px 0 10px; }
+.qr-card .qimg { display: flex; justify-content: center; }
+.qr-card .qimg img, .qr-card .qimg canvas { width: 180px !important; height: 180px !important; }
+.qr-card .qt { margin-top: 10px; font-size: 15px; }
+.qr-card .qt b { display: inline-block; font-size: 34px; line-height: 1.1; padding: 0 14px; border-radius: 10px; background: #111; color: #fff; margin-left: 6px; vertical-align: middle; }
+.qr-card .qp { font-size: 13px; color: #555; margin-top: 6px; }
+.qr-card .qn { font-size: 11px; color: #777; margin-top: 8px; }
+@media print {
+  body { background: #fff; }
+  .qr-bar, .qr-help, #toast, #busy, #sheet { display: none !important; }
+  .qr-grid { grid-template-columns: repeat(2, 1fr); gap: 10mm; padding: 0; }
+  .qr-card { padding: 8mm 6mm; }
+  .qr-card .qimg img, .qr-card .qimg canvas { width: 55mm !important; height: 55mm !important; }
+  @page { size: A4; margin: 12mm; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
 }
@@ -168,6 +197,7 @@ const FILTERS = [
   ['slip', 'รอตรวจสลิป'],
   ['unpaid', 'ยังไม่จ่าย'],
   ['todo', 'ต้องทำ'],
+  ['table', '🍽️ โต๊ะ'],
   ['done', 'เสร็จแล้ว'],
   ['cancelled', 'ยกเลิก'],
 ];
@@ -182,7 +212,7 @@ const S = {
   date: null, filter: 'all', known: null, fresh: {}, busy: {},
   sound: store.get('sound', true), repeat: store.get('repeat', true), paper: store.get('paper', 58),
   viewKey: '', spinning: false,
-  printed: store.get('printed', {}), sheet: null, lastSync: '',
+  printed: store.get('printed', {}), sheet: null, lastSync: '', qr: false,
 };
 
 /* ---------------- utils ---------------- */
@@ -280,6 +310,7 @@ function matches(o, f) {
   if (o.status === 'cancelled') return false;
   if (f === 'slip') return o.pay_status === 'pending' && !!o.slip_url;
   if (f === 'unpaid') return o.pay_status === 'pending' && !o.slip_url;
+  if (f === 'table') return o.fulfillment === 'table';
   return classify(o) === f;
 }
 
@@ -320,6 +351,7 @@ function render() {
   const app = $('#app');
   if (!S.pin) { app.innerHTML = '<div class="fade-in">' + viewLogin() + '</div>'; S.viewKey = ''; return; }
   if (!S.data) { app.innerHTML = '<div class="empty fade-in"><div class="spin"></div>กำลังโหลด...</div>'; return; }
+  if (S.qr) return; // หน้าป้าย QR วาดแยก ไม่ต้องวาดทับตอน poll
 
   // จำตำแหน่งที่เลื่อนแถบ chips ไว้ ไม่ให้เด้งกลับซ้ายสุดตอนวาดใหม่
   const scrolls = Array.from(document.querySelectorAll('.top .chips')).map((el) => el.scrollLeft);
@@ -380,12 +412,13 @@ function viewList() {
   const list = S.data.orders.filter((o) => o.slot_date === S.date && matches(o, S.filter));
   if (!list.length) return '<div class="empty">ไม่มีออเดอร์' + (S.filter === 'all' ? 'ในวันนี้' : 'ในหมวดนี้') + '</div>';
   const groups = {};
-  list.forEach((o) => { (groups[o.slot_time] = groups[o.slot_time] || []).push(o); });
+  const TB = '\u0000table'; // ให้กลุ่มสั่งที่โต๊ะอยู่บนสุด (ทำทันที)
+  list.forEach((o) => { const k = o.fulfillment === 'table' ? TB : o.slot_time; (groups[k] = groups[k] || []).push(o); });
   let n = 0;
   return Object.keys(groups).sort().map((t) => {
     const g = groups[t];
     const cups = g.filter((o) => o.status !== 'cancelled').reduce((s, o) => s + o.cups, 0);
-    return '<div class="slot-h"><b>รอบ ' + h(t) + ' น.</b><span class="muted">' + g.length + ' ออเดอร์ · ' + cups + ' แก้ว</span></div>' +
+    return '<div class="slot-h' + (t === TB ? ' table' : '') + '"><b>' + (t === TB ? '🍽️ สั่งที่โต๊ะ · ทำเลย' : 'รอบ ' + h(t) + ' น.') + '</b><span class="muted">' + g.length + ' ออเดอร์ · ' + cups + ' แก้ว</span></div>' +
       g.map((o) => card(o, Math.min(n++, 10))).join('');
   }).join('');
 }
@@ -395,7 +428,10 @@ function card(o, idx) {
   const pay = o.pay_status === 'paid'
     ? '<span class="pill ok">จ่ายแล้ว</span>'
     : (o.pay_status === 'refunded' ? '<span class="pill">คืนเงินแล้ว</span>'
-      : (o.slip_url ? '<span class="pill warn">ส่งสลิปแล้ว รอตรวจ</span>' : '<span class="pill red">ยังไม่จ่าย</span>'));
+      : (o.slip_url ? '<span class="pill warn">ส่งสลิปแล้ว รอตรวจ</span>'
+        : (o.pay_method === 'cash' ? '<span class="pill red">💵 เก็บเงินสด</span>' : '<span class="pill red">ยังไม่จ่าย</span>')));
+  const isTable = o.fulfillment === 'table';
+  const tableNo = String(o.location_note || '').replace(/^โต๊ะ\s*/, '');
   const st = o.status === 'cancelled' ? '<span class="pill">ยกเลิก</span>' : '<span class="pill blue">' + h(STATUS_TH[o.status] || o.status) + '</span>';
   const loc = o.fulfillment === 'pickup' ? 'มารับที่ร้าน' : h(o.location);
 
@@ -406,7 +442,9 @@ function card(o, idx) {
     (S.printed[o.order_id] ? '<span class="pill">🖨 ปริ้นแล้ว</span>' : '') + '</div>' +
     '<div class="c-who"><span>👤 ' + h(o.display_name) + '</span>' +
     (o.phone ? '<a href="tel:' + h(o.phone) + '">📞 ' + h(o.phone) + '</a>' : '') + '</div>' +
-    '<div class="c-loc">📍 ' + loc + (o.location_note ? ' <small>· ' + h(o.location_note) + '</small>' : '') + '</div>' +
+    (isTable
+      ? '<div class="c-table">🍽️ ' + h(o.location) + ' · โต๊ะ <b>' + h(tableNo) + '</b></div>'
+      : '<div class="c-loc">📍 ' + loc + (o.location_note ? ' <small>· ' + h(o.location_note) + '</small>' : '') + '</div>') +
     '<div class="items">' + o.items.map((i) =>
       '<div class="item"><b>' + i.qty + '×</b><span>' + h(i.name) + (i.options ? '<small>' + h(i.options) + '</small>' : '') + '</span></div>'
     ).join('') + '</div>' +
@@ -418,7 +456,7 @@ function card(o, idx) {
   if (o.status !== 'cancelled') {
     html += '<div class="acts">';
     if (o.slip_url) html += '<a class="btn ghost" href="' + h(o.slip_url) + '" target="_blank" rel="noopener">🧾 ดูสลิป</a>';
-    if (o.pay_status !== 'paid') html += '<button class="btn ok grow" data-act="paid" data-arg="' + h(o.order_id) + '"' + (busy ? ' disabled' : '') + '>✓ ยืนยันจ่ายแล้ว</button>';
+    if (o.pay_status !== 'paid') html += '<button class="btn ok grow" data-act="paid" data-arg="' + h(o.order_id) + '"' + (busy ? ' disabled' : '') + '>' + (o.pay_method === 'cash' && !o.slip_url ? '💵 รับเงินสดแล้ว' : '✓ ยืนยันจ่ายแล้ว') + '</button>';
     html += '<button class="btn soft" data-act="print" data-arg="' + h(o.order_id) + '">🖨 ปริ้น</button>' +
       '<button class="btn ghost" data-act="more" data-arg="' + h(o.order_id) + '">⋯</button></div>' +
       '<div class="acts"><div class="seg">' + STATUS.map((s) =>
@@ -553,9 +591,14 @@ function drawReceipt(o) {
   text(seqOf(o.order_id), 64, { bold: true, align: 'center' });
   text(o.order_id, 18, { align: 'center' });
   dash();
-  text((o.fulfillment === 'pickup' ? 'มารับ ' : 'ส่ง ') + o.slot_label.replace(/^.*\((.*)\)$/, '$1') + ' · รอบ ' + o.slot_time, 24, { bold: true });
-  text(o.fulfillment === 'pickup' ? 'มารับที่ร้าน' : 'ที่: ' + o.location, 26, { bold: true });
-  if (o.location_note) text(o.location_note, 22);
+  if (o.fulfillment === 'table') {
+    text('สั่งที่โต๊ะ · ' + o.location, 24, { bold: true, align: 'center' });
+    box(o.location_note || 'โต๊ะ', 40);
+  } else {
+    text((o.fulfillment === 'pickup' ? 'มารับ ' : 'ส่ง ') + o.slot_label.replace(/^.*\((.*)\)$/, '$1') + ' · รอบ ' + o.slot_time, 24, { bold: true });
+    text(o.fulfillment === 'pickup' ? 'มารับที่ร้าน' : 'ที่: ' + o.location, 26, { bold: true });
+    if (o.location_note) text(o.location_note, 22);
+  }
   text('ลูกค้า: ' + o.display_name, 20);
   if (o.phone) text('โทร: ' + o.phone, 20);
   dash();
@@ -565,10 +608,10 @@ function drawReceipt(o) {
   });
   dash();
   if (o.discount) lr(o.points_used ? 'แลก ' + o.points_used + ' แต้ม' : 'ส่วนลด ' + (o.coupon_code || ''), '-' + fmt(o.discount), 20);
-  if (o.fulfillment !== 'pickup') lr('ค่าส่ง', o.delivery_fee ? fmt(o.delivery_fee) : 'ฟรี', 20);
+  if (o.fulfillment === 'delivery') lr('ค่าส่ง', o.delivery_fee ? fmt(o.delivery_fee) : 'ฟรี', 20);
   lr('รวม (' + o.cups + ' แก้ว)', fmt(o.total) + ' บาท', 28, true);
   y += 4;
-  box(o.pay_status === 'paid' ? '✓ จ่ายแล้ว' : 'ยังไม่ได้รับเงิน', 24);
+  box(o.pay_status === 'paid' ? '✓ จ่ายแล้ว' : (o.pay_method === 'cash' ? 'เก็บเงินสด ' + fmt(o.total) + ' บาท' : 'ยังไม่ได้รับเงิน'), 24);
   if (o.note) { text('หมายเหตุ: ' + o.note, 22, { bold: true }); }
   dash();
   text('ปริ้น ' + new Date().toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }), 16, { align: 'center' });
@@ -649,6 +692,34 @@ function saveImage() {
   a.click();
 }
 
+/* ---------------- ป้าย QR โต๊ะ ---------------- */
+function renderQr() {
+  const d = S.data, app = $('#app');
+  const liffId = d.shop.liff_id;
+  let html = '<div class="qr-bar"><button class="btn ghost" data-act="qrBack">← กลับ</button><b>ป้าย QR สั่งที่โต๊ะ</b>' +
+    (liffId && d.tables.length ? '<button class="btn primary" data-act="qrPrint">🖨 ปริ้น</button>' : '') + '</div>';
+  if (!liffId) {
+    html += '<div class="empty">ยังไม่ได้ใส่ liff_id ในแท็บ config ของ Sheet</div>';
+  } else if (!d.tables.length) {
+    html += '<div class="empty">ยังไม่มีโต๊ะ เพิ่มได้ที่แท็บ tables ใน Sheet (ติ๊ก active)</div>';
+  } else {
+    html += '<div class="qr-help">' + d.tables.length + ' โต๊ะ · กด "ปริ้น" แล้วเลือกเครื่องพิมพ์ หรือ "บันทึกเป็น PDF" (A4 หน้าละ 4 ป้าย) · ' +
+      'เพิ่ม/ลบโต๊ะได้ที่แท็บ tables ใน Sheet</div><div class="qr-grid">' +
+      d.tables.map((t, i) => '<div class="qr-card"><div class="qs">' + h(d.shop.name) + '</div>' +
+        '<div class="qh">สแกนสั่งเครื่องดื่ม ☕</div><div class="qimg" id="qr' + i + '"></div>' +
+        '<div class="qt">โต๊ะ<b>' + h(t.table_no) + '</b></div><div class="qp">' + h(t.place) + '</div>' +
+        '<div class="qn">สแกนด้วยกล้องมือถือ แล้วเปิดใน LINE</div></div>').join('') + '</div>';
+  }
+  app.innerHTML = html;
+  if (!liffId || !window.QRCode) return;
+  d.tables.forEach((t, i) => {
+    new QRCode(document.getElementById('qr' + i), {
+      text: 'https://liff.line.me/' + liffId + '?table=' + encodeURIComponent(t.code),
+      width: 360, height: 360, correctLevel: QRCode.CorrectLevel.M,
+    });
+  });
+}
+
 /* ---------------- actions ---------------- */
 const ACT = {
   login: () => {
@@ -696,13 +767,17 @@ const ACT = {
       '<div class="opt"><span>เตือนซ้ำทุก ' + ALARM_EVERY + ' วิ จนกว่าจะแตะจอ</span><button class="chip ' + (S.repeat ? 'on' : '') + '" data-act="toggleRepeat">' + (S.repeat ? 'เปิด' : 'ปิด') + '</button></div>' +
       '<div class="opt"><span>ทดสอบเสียง</span><button class="chip" data-act="testSound">🔔 ลอง</button></div>' +
       '<div class="muted" style="font-size:12px">ความดังขึ้นกับระดับเสียงสื่อ (Media) ของมือถือ ตั้งไว้สูงสุดและปิดโหมดเงียบนะ</div>' +
+      '<button class="btn soft" style="width:100%;margin-top:12px" data-act="qrTables">🔲 ปริ้นป้าย QR สั่งที่โต๊ะ</button>' +
       '<div class="muted" style="font-size:13px;margin-top:10px">เปิดหน้านี้ค้างไว้ ระบบจะเช็คออเดอร์ใหม่ทุก ' + CONFIG.POLL_SECONDS + ' วินาที และพยายามไม่ให้จอดับ</div>' +
       '<div class="row-btns"><button class="btn ghost grow" data-act="logout">ออกจากระบบ</button><button class="btn primary grow" data-act="closeSheet">เสร็จ</button></div>');
   },
   paper: (p) => { S.paper = Number(p); store.set('paper', S.paper); ACT.settings(); },
   testSound: () => { unlockAudio(); setTimeout(() => ding(true), 50); },
   toggleRepeat: () => { S.repeat = !S.repeat; store.set('repeat', S.repeat); if (!S.repeat) stopAlarm(); ACT.settings(); },
-  logout: () => { S.pin = ''; store.set('pin', ''); S.data = null; S.known = null; closeSheet(); render(); },
+  qrTables: () => { closeSheet(); S.qr = true; renderQr(); window.scrollTo(0, 0); },
+  qrBack: () => { S.qr = false; render(); },
+  qrPrint: () => window.print(),
+  logout: () => { S.qr = false; S.pin = ''; store.set('pin', ''); S.data = null; S.known = null; closeSheet(); render(); },
 };
 
 document.addEventListener('click', (e) => {
