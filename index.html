@@ -43,7 +43,9 @@ small { font-size: 12px; }
 
 /* ---------- hero ---------- */
 .hero { display: flex; align-items: center; gap: 12px; padding: 16px 16px 12px; background: var(--card); border-bottom: 1px solid var(--line); }
-.logo { width: 44px; height: 44px; border-radius: 12px; background: var(--brand); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 18px; flex: none; }
+.logo { width: 44px; height: 44px; border-radius: 12px; background: var(--brand); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 18px; flex: none; overflow: hidden; }
+.logo.has-img { background: #fff; border: 1px solid var(--line); border-radius: 50%; }
+.logo img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .hero-main { flex: 1; min-width: 0; }
 .hero-name { font-weight: 700; font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hero-sub { font-size: 13px; color: var(--muted); }
@@ -163,7 +165,7 @@ textarea.inp { min-height: 72px; resize: vertical; }
 .sheet[hidden] { display: none; }
 .sheet-bg { position: absolute; inset: 0; background: rgba(30, 20, 18, .45); animation: fade .15s; }
 .sheet-panel { position: relative; width: 100%; max-width: 560px; max-height: 92vh; overflow-y: auto; background: var(--card); border-radius: 18px 18px 0 0; animation: up .2s ease-out; }
-.sh-img { aspect-ratio: 16 / 10; background: #f3ece6; }
+.sh-img { aspect-ratio: 4 / 3; max-height: 42vh; width: 100%; background: #f3ece6; overflow: hidden; }
 .sh-body { padding: 16px; }
 .sh-title { font-size: 18px; font-weight: 700; }
 .price.big { font-size: 18px; color: var(--brand); margin-bottom: 4px; }
@@ -294,12 +296,14 @@ const cleanPhone = (p) => String(p || '').replace(/\D/g, '');
 function imgUrl(u) {
   if (!u) return '';
   const m = String(u).match(/(?:\/d\/|[?&]id=)([\w-]{20,})/);
-  if (m && /drive\.google|docs\.google/.test(u)) return 'https://drive.google.com/thumbnail?id=' + m[1] + '&sz=w600';
+  if (m && /drive\.google|docs\.google/.test(u)) return 'https://lh3.googleusercontent.com/d/' + m[1] + '=w800';
   return u;
 }
+/** รูปโหลดไม่ได้ (ลิงก์เสีย / ยังไม่แชร์) → แสดงไอคอนแก้วแทน */
+function imgFail(el) { const p = el.parentNode; if (p) p.innerHTML = '<div class="ph">' + CUP_SVG + '</div>'; }
 function imgTag(m) {
   return m.image_url
-    ? '<img src="' + h(imgUrl(m.image_url)) + '" alt="" loading="lazy">'
+    ? '<img src="' + h(imgUrl(m.image_url)) + '" alt="" loading="lazy" onerror="imgFail(this)">'
     : '<div class="ph">' + CUP_SVG + '</div>';
 }
 
@@ -482,7 +486,10 @@ function render() {
 function hero() {
   const d = S.data, u = d.user;
   const initial = (d.shop.name || '☕').trim().charAt(0);
-  return '<div class="hero"><div class="logo">' + h(initial) + '</div>' +
+  const logo = d.shop.logo_url
+    ? '<div class="logo has-img"><img src="' + h(imgUrl(d.shop.logo_url)) + '" alt="" onerror="this.parentNode.classList.remove(\'has-img\');this.replaceWith(document.createTextNode(\'' + h(initial).replace(/'/g, '') + '\'))"></div>'
+    : '<div class="logo">' + h(initial) + '</div>';
+  return '<div class="hero">' + logo +
     '<div class="hero-main"><div class="hero-name">' + h(d.shop.name) + '</div>' +
     '<div class="hero-sub">' + (u && u.name ? 'สวัสดีคุณ ' + h(u.name) : 'สั่งเครื่องดื่มออนไลน์') + '</div></div>' +
     (u ? '<button class="pts" data-act="go" data-arg="member">★ ' + fmt(u.points) + ' แต้ม</button>' : '') +
