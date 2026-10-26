@@ -198,6 +198,7 @@ small { font-size: 12px; }
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbyV2T85wiwOpquxutQSbY8UPsk3h7UphP4fux1auCflPAB9poRHCMXLpk1Eg2anXz4/exec',
   POLL_SECONDS: 20,
+  PAPER_MM: 58, // เครื่องพิมพ์ที่ร้านพิมพ์ได้ 58 มม. อย่างเดียว (ถ้าเปลี่ยนเครื่องเป็น 80 มม. แก้ตรงนี้)
 };
 
 const STATUS = [
@@ -222,7 +223,7 @@ const store = {
 const S = {
   pin: store.get('pin', ''), data: null, loading: false, error: '',
   date: null, filter: 'all', known: null, fresh: {}, busy: {},
-  sound: store.get('sound', true), repeat: store.get('repeat', true), paper: store.get('paper', 58),
+  sound: store.get('sound', true), repeat: store.get('repeat', true), paper: CONFIG.PAPER_MM,
   viewKey: '', spinning: false,
   printed: store.get('printed', {}), sheet: null, lastSync: '', qr: false,
 };
@@ -426,7 +427,7 @@ function viewTop() {
     '<button class="icon-btn ' + (S.sound ? '' : 'off') + '" data-act="toggleSound" title="เสียงเตือน">' + (S.sound ? '🔔' : '🔕') + '</button>' +
     '<button class="icon-btn' + (S.spinning ? ' spinning' : '') + '" data-act="refresh" title="รีเฟรช">↻</button>' +
     '<button class="icon-btn" data-act="settings" title="ตั้งค่า">⚙️</button></div>' +
-    (S.sound && !audioReady() ? '<button class="sound-warn" data-act="enableSound">🔇 แตะตรงนี้ 1 ครั้งเพื่อเปิดเสียงเตือนออเดอร์ใหม่</button>' : '') +
+    (S.sound && !audioReady() ? '<button class="sound-warn" data-act="enableSound">🔇 แตะจอตรงไหนก็ได้ 1 ครั้ง เพื่อเปิดเสียงเตือนออเดอร์ใหม่</button>' : '') +
     '<div class="chips">' + d.dates.map((x) => {
       const n = d.orders.filter((o) => o.slot_date === x.date && isActive(o)).length;
       return '<button class="chip ' + (x.date === S.date ? 'on' : '') + '" data-act="date" data-arg="' + x.date + '">' + h(x.label) +
@@ -707,7 +708,7 @@ async function openPrint(id) {
   await new Promise((r) => setTimeout(r, 30)); // ให้ overlay วาดก่อนเริ่มงานหนัก
   try { printCanvas = drawReceipt(printOrder); } finally { hideBusy(); }
   const isAndroid = /Android/i.test(navigator.userAgent);
-  openSheet('<h3>ปริ้นใบออเดอร์ ' + h(seqOf(id)) + '</h3><div class="muted">กระดาษ ' + S.paper + ' มม. · เปลี่ยนได้ที่ ⚙️</div>' +
+  openSheet('<h3>ปริ้นใบออเดอร์ ' + h(seqOf(id)) + '</h3><div class="muted">กระดาษ ' + S.paper + ' มม.</div>' +
     '<div class="preview"><img src="' + printCanvas.toDataURL('image/png') + '" alt=""></div>' +
     (isAndroid ? '' : '<div class="muted" style="font-size:13px">ปริ้นผ่าน RawBT ใช้ได้บนมือถือ Android เท่านั้น บนเครื่องนี้กด "บันทึกรูป" แทนได้</div>') +
     '<div class="row-btns"><button class="btn ghost grow" data-act="saveImg">บันทึกรูป</button>' +
@@ -812,8 +813,7 @@ const ACT = {
   uncancel: (id) => { closeSheet(); update(id, { status: 'new' }, 'เปิดออเดอร์อีกครั้งแล้ว'); },
   settings: () => {
     openSheet('<h3>ตั้งค่า</h3>' +
-      '<div class="opt"><span>ขนาดกระดาษ</span><span><button class="chip ' + (S.paper === 58 ? 'on' : '') + '" data-act="paper" data-arg="58">58 มม.</button> ' +
-      '<button class="chip ' + (S.paper === 80 ? 'on' : '') + '" data-act="paper" data-arg="80">80 มม.</button></span></div>' +
+      '<div class="opt"><span>ขนาดกระดาษ</span><span class="muted">' + S.paper + ' มม.</span></div>' +
       '<div class="opt"><span>เสียงเตือนออเดอร์ใหม่</span><button class="chip ' + (S.sound ? 'on' : '') + '" data-act="toggleSound">' + (S.sound ? 'เปิด' : 'ปิด') + '</button></div>' +
       '<div class="opt"><span>เตือนซ้ำทุก ' + ALARM_EVERY + ' วิ จนกว่าจะแตะจอ</span><button class="chip ' + (S.repeat ? 'on' : '') + '" data-act="toggleRepeat">' + (S.repeat ? 'เปิด' : 'ปิด') + '</button></div>' +
       '<div class="opt"><span>ทดสอบเสียง</span><button class="chip" data-act="testSound">🔔 ลอง</button></div>' +
@@ -822,7 +822,6 @@ const ACT = {
       '<div class="muted" style="font-size:13px;margin-top:10px">เปิดหน้านี้ค้างไว้ ระบบจะเช็คออเดอร์ใหม่ทุก ' + CONFIG.POLL_SECONDS + ' วินาที และพยายามไม่ให้จอดับ · ออเดอร์จะเด้งเตือนเมื่อลูกค้าส่งสลิปแล้วเท่านั้น</div>' +
       '<div class="row-btns"><button class="btn ghost grow" data-act="logout">ออกจากระบบ</button><button class="btn primary grow" data-act="closeSheet">เสร็จ</button></div>');
   },
-  paper: (p) => { S.paper = Number(p); store.set('paper', S.paper); ACT.settings(); },
   testSound: () => { unlockAudio(); setTimeout(() => ding(true), 50); },
   toggleRepeat: () => { S.repeat = !S.repeat; store.set('repeat', S.repeat); if (!S.repeat) stopAlarm(); ACT.settings(); },
   qrTables: () => { closeSheet(); S.qr = true; renderQr(); window.scrollTo(0, 0); },
@@ -847,6 +846,8 @@ document.addEventListener('visibilitychange', () => {
 });
 setInterval(() => { if (S.pin && document.visibilityState === 'visible') refresh(); }, CONFIG.POLL_SECONDS * 1000);
 
+// สร้าง AudioContext ตั้งแต่เปิดหน้า: ถ้าเบราว์เซอร์อนุญาต (เช่น เปิดจากไอคอนบนหน้าจอหลัก) จะดังได้เลยไม่ต้องแตะ
+unlockAudio();
 render();
 if (S.pin) refresh();
 </script>
