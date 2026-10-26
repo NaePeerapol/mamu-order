@@ -45,6 +45,8 @@ small { font-size: 12px; }
 .chip i { font-style: normal; display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 999px; background: rgba(0,0,0,.08); font-size: 11px; text-align: center; }
 .chip.on i { background: rgba(255,255,255,.25); }
 .chip.alert:not(.on) { border-color: #e9b4bb; color: var(--brand); }
+.chip.quiet:not(.on) { color: var(--muted); }
+.sound-warn { display: block; width: calc(100% - 28px); margin: 0 14px 10px; padding: 10px 12px; border-radius: 10px; background: var(--warn-soft); color: var(--warn); font-weight: 600; font-size: 14px; text-align: center; animation: pulse 1.4s ease-in-out infinite; }
 
 /* slot header */
 .slot-h { display: flex; align-items: baseline; justify-content: space-between; margin: 18px 14px 8px; }
@@ -54,6 +56,7 @@ small { font-size: 12px; }
 .card { background: var(--card); margin: 0 10px 10px; border-radius: 14px; padding: 12px 14px; border: 2px solid transparent; }
 .card.fresh { border-color: var(--brand); box-shadow: 0 0 0 4px rgba(139,30,45,.12); }
 .card.cancelled { opacity: .55; }
+.card.waiting { background: #fbf9f7; border: 1px dashed var(--line); }
 .c-top { display: flex; align-items: center; gap: 10px; }
 .seq { font-size: 26px; font-weight: 700; line-height: 1; }
 .c-id { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); }
@@ -187,6 +190,10 @@ small { font-size: 12px; }
  *   API_URL : URL เดียวกับใน index.html (Apps Script /exec)
  *   PIN     : ตั้งใน Apps Script → Script Properties → STAFF_PIN
  * ปริ้น: ใช้แอป RawBT (Android) + เครื่องพิมพ์ thermal Bluetooth 58/80 มม.
+ *
+ * ออเดอร์ส่ง/มารับเอง ที่ยังไม่ส่งสลิป = "รอสลิป" (เงียบ ไม่เตือน ไม่นับในรายการหลัก)
+ * พอสลิปเข้า (หรือยอด 0 / พนักงานกดยืนยันจ่าย) → ขึ้นเป็นออเดอร์ใหม่ + เสียงเตือน
+ * ออเดอร์สั่งที่โต๊ะ (QR) → ดังทันทีทุกออเดอร์ ไม่ว่าจะโอนหรือเงินสด (เสิร์ฟทันที)
  * ===================================================================== */
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbyV2T85wiwOpquxutQSbY8UPsk3h7UphP4fux1auCflPAB9poRHCMXLpk1Eg2anXz4/exec',
@@ -200,10 +207,10 @@ const STATUS_TH = { new: 'รับแล้ว', preparing: 'กำลังท
 const FILTERS = [
   ['all', 'ทั้งหมด'],
   ['slip', 'รอตรวจสลิป'],
-  ['unpaid', 'ยังไม่จ่าย'],
   ['todo', 'ต้องทำ'],
   ['table', '🍽️ โต๊ะ'],
   ['done', 'เสร็จแล้ว'],
+  ['wait', '⏳ รอสลิป'],
   ['cancelled', 'ยกเลิก'],
 ];
 
@@ -238,8 +245,13 @@ async function api(action, payload) {
 /* ---------------- sound / wake lock ---------------- */
 let audioCtx = null;
 function unlockAudio() {
-  try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); if (audioCtx.state === 'suspended') audioCtx.resume(); } catch (e) {}
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume().then(() => { if (S.data && !S.qr) render(); });
+  } catch (e) {}
 }
+/** เบราว์เซอร์จะเล่นเสียงได้หลังผู้ใช้แตะจอเท่านั้น (เปิดหน้าใหม่ / Android โหลดแท็บใหม่ → เงียบจนกว่าจะแตะ) */
+const audioReady = () => !!audioCtx && audioCtx.state === 'running';
 /** เสียงเตือน ~2.4 วินาที: ไล่โน้ต 3 ชุด เสียงสองชั้น (ดังกว่าเสียง sine ธรรมดา) */
 function ding(force) {
   if ((!S.sound && !force) || !audioCtx) return;
@@ -305,16 +317,28 @@ async function keepAwake() {
 }
 
 /* ---------------- data ---------------- */
+/** ส่ง/มารับเอง ที่โอนแต่ยังไม่ส่งสลิป → ยังไม่ใช่งานของร้าน (ซ่อนจากรายการหลัก ไม่เตือน) · สั่งที่โต๊ะไม่รอสลิป */
+function isWaiting(o) {
+  return o.status !== 'cancelled' && o.fulfillment !== 'table' && o.pay_status === 'pending' && !o.slip_url && o.pay_method !== 'cash';
+}
+/** ออเดอร์ที่ร้านต้องเห็น/ทำ */
+function isActive(o) { return o.status !== 'cancelled' && !isWaiting(o); }
+/** รอสลิปแต่เลยเวลารอบไปแล้ว → ควรทักถามลูกค้า */
+function isLate(o) {
+  if (!isWaiting(o) || o.fulfillment === 'table' || !/^\d{2}:\d{2}$/.test(o.slot_time)) return false;
+  return (o.slot_date + ' ' + o.slot_time) <= String(S.data.server_time || '').slice(0, 16);
+}
 function classify(o) {
   if (o.status === 'cancelled') return 'cancelled';
   return o.status === 'ready' || o.status === 'delivered' ? 'done' : 'todo';
 }
 function matches(o, f) {
-  if (f === 'all') return o.status !== 'cancelled';
   if (f === 'cancelled') return o.status === 'cancelled';
   if (o.status === 'cancelled') return false;
+  if (f === 'wait') return isWaiting(o);
+  if (isWaiting(o)) return false;
+  if (f === 'all') return true;
   if (f === 'slip') return o.pay_status === 'pending' && !!o.slip_url;
-  if (f === 'unpaid') return o.pay_status === 'pending' && !o.slip_url;
   if (f === 'table') return o.fulfillment === 'table';
   return classify(o) === f;
 }
@@ -325,7 +349,8 @@ async function refresh(manual) {
   if (manual) { S.spinning = true; const b = document.querySelector('[data-act=refresh]'); if (b) b.classList.add('spinning'); }
   try {
     const data = await api('staffOrders');
-    const ids = data.orders.map((o) => o.order_id);
+    // เตือนเมื่อออเดอร์ "เริ่มเป็นงานของร้าน" (สั่งใหม่แบบเงินสด/ยอด 0 หรือสลิปเพิ่งเข้า) ไม่ใช่ตอนกดสั่ง
+    const ids = data.orders.filter(isActive).map((o) => o.order_id);
     if (S.known) {
       const added = ids.filter((id) => !S.known[id]);
       if (added.length) {
@@ -389,7 +414,8 @@ function viewTop() {
   const d = S.data;
   const inDate = d.orders.filter((o) => o.slot_date === S.date);
   const count = (f) => inDate.filter((o) => matches(o, f)).length;
-  const cupsOf = (ds) => d.orders.filter((o) => o.slot_date === ds && o.status !== 'cancelled').reduce((n, o) => n + o.cups, 0);
+  const cupsOf = (ds) => d.orders.filter((o) => o.slot_date === ds && isActive(o)).reduce((n, o) => n + o.cups, 0);
+  const waitN = count('wait');
   const initial = h((d.shop.name || '☕').charAt(0));
   const logo = d.shop.logo_url
     ? '<div class="logo has-img"><img src="' + h(d.shop.logo_url) + '" alt="" onerror="this.parentNode.classList.remove(\'has-img\');this.replaceWith(\'' + initial.replace(/'/g, '') + '\')"></div>'
@@ -400,17 +426,20 @@ function viewTop() {
     '<button class="icon-btn ' + (S.sound ? '' : 'off') + '" data-act="toggleSound" title="เสียงเตือน">' + (S.sound ? '🔔' : '🔕') + '</button>' +
     '<button class="icon-btn' + (S.spinning ? ' spinning' : '') + '" data-act="refresh" title="รีเฟรช">↻</button>' +
     '<button class="icon-btn" data-act="settings" title="ตั้งค่า">⚙️</button></div>' +
+    (S.sound && !audioReady() ? '<button class="sound-warn" data-act="enableSound">🔇 แตะตรงนี้ 1 ครั้งเพื่อเปิดเสียงเตือนออเดอร์ใหม่</button>' : '') +
     '<div class="chips">' + d.dates.map((x) => {
-      const n = d.orders.filter((o) => o.slot_date === x.date && o.status !== 'cancelled').length;
+      const n = d.orders.filter((o) => o.slot_date === x.date && isActive(o)).length;
       return '<button class="chip ' + (x.date === S.date ? 'on' : '') + '" data-act="date" data-arg="' + x.date + '">' + h(x.label) +
         '<i>' + n + '</i></button>';
     }).join('') + '</div>' +
     '<div class="chips">' + FILTERS.map((f) => {
       const n = count(f[0]);
-      return '<button class="chip ' + (S.filter === f[0] ? 'on' : '') + (f[0] === 'slip' && n ? ' alert' : '') + '" data-act="filter" data-arg="' + f[0] + '">' +
+      const cls = (f[0] === 'slip' && n ? ' alert' : '') + (f[0] === 'wait' ? ' quiet' : '');
+      return '<button class="chip ' + (S.filter === f[0] ? 'on' : '') + cls + '" data-act="filter" data-arg="' + f[0] + '">' +
         f[1] + '<i>' + n + '</i></button>';
     }).join('') + '</div>' +
-    '<div class="chips" style="padding-bottom:10px"><small class="muted">รวม ' + fmt(cupsOf(S.date)) + ' แก้ว</small></div></div>';
+    '<div class="chips" style="padding-bottom:10px"><small class="muted">รวม ' + fmt(cupsOf(S.date)) + ' แก้ว' +
+    (waitN ? ' · รอลูกค้าส่งสลิปอีก ' + waitN + ' ออเดอร์' : '') + '</small></div></div>';
 }
 
 function viewList() {
@@ -430,17 +459,20 @@ function viewList() {
 
 function card(o, idx) {
   const busy = S.busy[o.order_id];
+  const wait = isWaiting(o);
   const pay = o.pay_status === 'paid'
     ? '<span class="pill ok">จ่ายแล้ว</span>'
     : (o.pay_status === 'refunded' ? '<span class="pill">คืนเงินแล้ว</span>'
       : (o.slip_url ? '<span class="pill warn">ส่งสลิปแล้ว รอตรวจ</span>'
-        : (o.pay_method === 'cash' ? '<span class="pill red">💵 เก็บเงินสด</span>' : '<span class="pill red">ยังไม่จ่าย</span>')));
+        : (o.pay_method === 'cash' ? '<span class="pill red">💵 เก็บเงินสด</span>'
+          : (!wait ? '<span class="pill red">ยังไม่จ่าย</span>'
+            : (isLate(o) ? '<span class="pill red">⚠️ เลยรอบแล้ว · ทักถามลูกค้า</span>' : '<span class="pill">⏳ รอลูกค้าส่งสลิป</span>')))));
   const isTable = o.fulfillment === 'table';
   const tableNo = String(o.location_note || '').replace(/^โต๊ะ\s*/, '');
-  const st = o.status === 'cancelled' ? '<span class="pill">ยกเลิก</span>' : '<span class="pill blue">' + h(STATUS_TH[o.status] || o.status) + '</span>';
+  const st = o.status === 'cancelled' ? '<span class="pill">ยกเลิก</span>' : (wait ? '' : '<span class="pill blue">' + h(STATUS_TH[o.status] || o.status) + '</span>');
   const loc = o.fulfillment === 'pickup' ? 'มารับที่ร้าน' : h(o.location);
 
-  let html = '<div class="card ' + (S.fresh[o.order_id] ? 'fresh ' : '') + (o.status === 'cancelled' ? 'cancelled' : '') + '" style="--i:' + (idx || 0) + '" data-card="' + h(o.order_id) + '">' +
+  let html = '<div class="card ' + (S.fresh[o.order_id] ? 'fresh ' : '') + (o.status === 'cancelled' ? 'cancelled' : '') + (wait ? 'waiting' : '') + '" style="--i:' + (idx || 0) + '" data-card="' + h(o.order_id) + '">' +
     '<div class="c-top"><div class="seq">' + h(seqOf(o.order_id)) + '</div>' +
     '<div class="c-id">' + h(o.order_id) + '<br>สั่ง ' + h(String(o.created_at).slice(11)) + ' น.</div>' +
     (S.fresh[o.order_id] ? '<span class="new-badge">ใหม่</span>' : '') +
@@ -461,12 +493,14 @@ function card(o, idx) {
   if (o.status !== 'cancelled') {
     html += '<div class="acts">';
     if (o.slip_url) html += '<a class="btn ghost" href="' + h(o.slip_url) + '" target="_blank" rel="noopener">🧾 ดูสลิป</a>';
-    if (o.pay_status !== 'paid') html += '<button class="btn ok grow" data-act="paid" data-arg="' + h(o.order_id) + '"' + (busy ? ' disabled' : '') + '>' + (o.pay_method === 'cash' && !o.slip_url ? '💵 รับเงินสดแล้ว' : '✓ ยืนยันจ่ายแล้ว') + '</button>';
-    html += '<button class="btn soft" data-act="print" data-arg="' + h(o.order_id) + '">🖨 ปริ้น</button>' +
-      '<button class="btn ghost" data-act="more" data-arg="' + h(o.order_id) + '">⋯</button></div>' +
-      '<div class="acts"><div class="seg">' + STATUS.map((s) =>
+    if (o.pay_status !== 'paid') html += '<button class="btn ' + (wait ? 'ghost' : 'ok') + ' grow" data-act="paid" data-arg="' + h(o.order_id) + '"' + (busy ? ' disabled' : '') + '>' + (o.pay_method === 'cash' && !o.slip_url ? '💵 รับเงินสดแล้ว' : '✓ ยืนยันจ่ายแล้ว') + '</button>';
+    if (!wait) html += '<button class="btn soft" data-act="print" data-arg="' + h(o.order_id) + '">🖨 ปริ้น</button>';
+    html += '<button class="btn ghost" data-act="more" data-arg="' + h(o.order_id) + '">⋯</button></div>';
+    if (!wait) {
+      html += '<div class="acts"><div class="seg">' + STATUS.map((s) =>
         '<button class="' + (o.status === s[0] ? 'on' : '') + '" data-act="status" data-arg="' + h(o.order_id) + '|' + s[0] + '"' + (busy ? ' disabled' : '') + '>' + s[1] + '</button>'
       ).join('') + '</div></div>';
+    }
   } else {
     html += '<div class="acts"><button class="btn ghost" data-act="more" data-arg="' + h(o.order_id) + '">⋯</button></div>';
   }
@@ -510,6 +544,8 @@ async function update(id, patch, okMsg) {
   try {
     await api('staffUpdate', Object.assign({ order_id: id }, patch));
     Object.assign(o, patch);
+    // พนักงานเป็นคนทำให้ออเดอร์ขึ้นมาเอง → ไม่ต้องเตือนซ้ำตอน poll รอบถัดไป
+    if (S.known && isActive(o)) S.known[id] = true;
     if (okMsg) toast(okMsg);
   } catch (e) {
     Object.assign(o, before);
@@ -738,6 +774,7 @@ const ACT = {
     render(); refresh();
   },
   refresh: () => { unlockAudio(); refresh(true); },
+  enableSound: () => { unlockAudio(); setTimeout(() => { render(); if (audioReady()) toast('เปิดเสียงเตือนแล้ว 🔔'); }, 150); },
   toggleSound: () => {
     S.sound = !S.sound; store.set('sound', S.sound); unlockAudio();
     if (S.sound) ding(); else stopAlarm();
@@ -746,7 +783,13 @@ const ACT = {
   },
   date: (d) => { S.date = d; render(); window.scrollTo(0, 0); },
   filter: (f) => { S.filter = f; render(); },
-  paid: (id) => update(id, { pay_status: 'paid' }, 'ยืนยันจ่ายแล้ว ✓ ลูกค้าได้แต้มแล้ว'),
+  paid: (id) => {
+    const o = S.data.orders.find((x) => x.order_id === id);
+    const go = () => update(id, { pay_status: 'paid' }, 'ยืนยันจ่ายแล้ว ✓ ลูกค้าได้แต้มแล้ว');
+    // ยังไม่มีสลิป → ถามก่อน กันกดพลาด
+    if (o && isWaiting(o)) return confirmBox('ยืนยันว่าได้รับเงินแล้ว?', 'ออเดอร์นี้ลูกค้ายังไม่ได้ส่งสลิปในแชท ยืนยันแล้วออเดอร์จะขึ้นในรายการที่ต้องทำ', 'ได้รับเงินแล้ว', go);
+    go();
+  },
   status: (arg) => { const [id, st] = arg.split('|'); update(id, { status: st }); },
   print: (id) => openPrint(id),
   rawbt: () => sendToRawBT(),
@@ -776,7 +819,7 @@ const ACT = {
       '<div class="opt"><span>ทดสอบเสียง</span><button class="chip" data-act="testSound">🔔 ลอง</button></div>' +
       '<div class="muted" style="font-size:12px">ความดังขึ้นกับระดับเสียงสื่อ (Media) ของมือถือ ตั้งไว้สูงสุดและปิดโหมดเงียบนะ</div>' +
       '<button class="btn soft" style="width:100%;margin-top:12px" data-act="qrTables">🔲 ปริ้นป้าย QR สั่งที่โต๊ะ</button>' +
-      '<div class="muted" style="font-size:13px;margin-top:10px">เปิดหน้านี้ค้างไว้ ระบบจะเช็คออเดอร์ใหม่ทุก ' + CONFIG.POLL_SECONDS + ' วินาที และพยายามไม่ให้จอดับ</div>' +
+      '<div class="muted" style="font-size:13px;margin-top:10px">เปิดหน้านี้ค้างไว้ ระบบจะเช็คออเดอร์ใหม่ทุก ' + CONFIG.POLL_SECONDS + ' วินาที และพยายามไม่ให้จอดับ · ออเดอร์จะเด้งเตือนเมื่อลูกค้าส่งสลิปแล้วเท่านั้น</div>' +
       '<div class="row-btns"><button class="btn ghost grow" data-act="logout">ออกจากระบบ</button><button class="btn primary grow" data-act="closeSheet">เสร็จ</button></div>');
   },
   paper: (p) => { S.paper = Number(p); store.set('paper', S.paper); ACT.settings(); },
@@ -800,7 +843,7 @@ document.addEventListener('click', (e) => {
 });
 document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.id === 'pin') ACT.login(); });
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && S.pin) { keepAwake(); refresh(); }
+  if (document.visibilityState === 'visible' && S.pin) { unlockAudio(); keepAwake(); refresh(); }
 });
 setInterval(() => { if (S.pin && document.visibilityState === 'visible') refresh(); }, CONFIG.POLL_SECONDS * 1000);
 
