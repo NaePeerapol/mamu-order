@@ -191,9 +191,8 @@ small { font-size: 12px; }
  *   PIN     : ตั้งใน Apps Script → Script Properties → STAFF_PIN
  * ปริ้น: ใช้แอป RawBT (Android) + เครื่องพิมพ์ thermal Bluetooth 58/80 มม.
  *
- * ออเดอร์ส่ง/มารับเอง ที่ยังไม่ส่งสลิป = "รอสลิป" (เงียบ ไม่เตือน ไม่นับในรายการหลัก)
- * พอสลิปเข้า (หรือยอด 0 / พนักงานกดยืนยันจ่าย) → ขึ้นเป็นออเดอร์ใหม่ + เสียงเตือน
- * ออเดอร์สั่งที่โต๊ะ (QR) → ดังทันทีทุกออเดอร์ ไม่ว่าจะโอนหรือเงินสด (เสิร์ฟทันที)
+ * ทุกออเดอร์ดังทันทีตอนลูกค้ากดสั่ง (ส่ง / มารับเอง / สั่งที่โต๊ะ)
+ * ออเดอร์โอนที่ยังไม่ส่งสลิป ดูได้ที่ชิป "⏳ รอสลิป" · เลยเวลารอบแล้วยังไม่ส่ง → ป้ายแดงให้ทักถามลูกค้า
  * ===================================================================== */
 const CONFIG = {
   API_URL: 'https://script.google.com/macros/s/AKfycbyV2T85wiwOpquxutQSbY8UPsk3h7UphP4fux1auCflPAB9poRHCMXLpk1Eg2anXz4/exec',
@@ -318,15 +317,15 @@ async function keepAwake() {
 }
 
 /* ---------------- data ---------------- */
-/** ส่ง/มารับเอง ที่โอนแต่ยังไม่ส่งสลิป → ยังไม่ใช่งานของร้าน (ซ่อนจากรายการหลัก ไม่เตือน) · สั่งที่โต๊ะไม่รอสลิป */
-function isWaiting(o) {
-  return o.status !== 'cancelled' && o.fulfillment !== 'table' && o.pay_status === 'pending' && !o.slip_url && o.pay_method !== 'cash';
+/** โอนแต่ยังไม่ส่งสลิป (ยังแสดงในรายการปกติ แค่มีป้ายบอก) */
+function needSlip(o) {
+  return o.status !== 'cancelled' && o.pay_status === 'pending' && !o.slip_url && o.pay_method !== 'cash';
 }
-/** ออเดอร์ที่ร้านต้องเห็น/ทำ */
-function isActive(o) { return o.status !== 'cancelled' && !isWaiting(o); }
+/** ออเดอร์ที่ร้านต้องเห็น/ทำ = ทุกออเดอร์ที่ไม่ถูกยกเลิก (ดังทันทีตอนสั่ง) */
+function isActive(o) { return o.status !== 'cancelled'; }
 /** รอสลิปแต่เลยเวลารอบไปแล้ว → ควรทักถามลูกค้า */
 function isLate(o) {
-  if (!isWaiting(o) || o.fulfillment === 'table' || !/^\d{2}:\d{2}$/.test(o.slot_time)) return false;
+  if (!needSlip(o) || o.fulfillment === 'table' || !/^\d{2}:\d{2}$/.test(o.slot_time)) return false;
   return (o.slot_date + ' ' + o.slot_time) <= String(S.data.server_time || '').slice(0, 16);
 }
 function classify(o) {
@@ -336,8 +335,7 @@ function classify(o) {
 function matches(o, f) {
   if (f === 'cancelled') return o.status === 'cancelled';
   if (o.status === 'cancelled') return false;
-  if (f === 'wait') return isWaiting(o);
-  if (isWaiting(o)) return false;
+  if (f === 'wait') return needSlip(o);
   if (f === 'all') return true;
   if (f === 'slip') return o.pay_status === 'pending' && !!o.slip_url;
   if (f === 'table') return o.fulfillment === 'table';
@@ -350,7 +348,7 @@ async function refresh(manual) {
   if (manual) { S.spinning = true; const b = document.querySelector('[data-act=refresh]'); if (b) b.classList.add('spinning'); }
   try {
     const data = await api('staffOrders');
-    // เตือนเมื่อออเดอร์ "เริ่มเป็นงานของร้าน" (สั่งใหม่แบบเงินสด/ยอด 0 หรือสลิปเพิ่งเข้า) ไม่ใช่ตอนกดสั่ง
+    // เตือนทุกออเดอร์ใหม่ทันทีตอนลูกค้ากดสั่ง
     const ids = data.orders.filter(isActive).map((o) => o.order_id);
     if (S.known) {
       const added = ids.filter((id) => !S.known[id]);
@@ -440,7 +438,7 @@ function viewTop() {
         f[1] + '<i>' + n + '</i></button>';
     }).join('') + '</div>' +
     '<div class="chips" style="padding-bottom:10px"><small class="muted">รวม ' + fmt(cupsOf(S.date)) + ' แก้ว' +
-    (waitN ? ' · รอลูกค้าส่งสลิปอีก ' + waitN + ' ออเดอร์' : '') + '</small></div></div>';
+    (waitN ? ' · ยังไม่ส่งสลิป ' + waitN + ' ออเดอร์' : '') + '</small></div></div>';
 }
 
 function viewList() {
@@ -460,14 +458,13 @@ function viewList() {
 
 function card(o, idx) {
   const busy = S.busy[o.order_id];
-  const wait = isWaiting(o);
+  const wait = false; // ทุกออเดอร์แสดงปุ่มครบ (ปริ้น / สถานะ) ไม่ต้องรอสลิป
   const pay = o.pay_status === 'paid'
     ? '<span class="pill ok">จ่ายแล้ว</span>'
     : (o.pay_status === 'refunded' ? '<span class="pill">คืนเงินแล้ว</span>'
       : (o.slip_url ? '<span class="pill warn">ส่งสลิปแล้ว รอตรวจ</span>'
         : (o.pay_method === 'cash' ? '<span class="pill red">💵 เก็บเงินสด</span>'
-          : (!wait ? '<span class="pill red">ยังไม่จ่าย</span>'
-            : (isLate(o) ? '<span class="pill red">⚠️ เลยรอบแล้ว · ทักถามลูกค้า</span>' : '<span class="pill">⏳ รอลูกค้าส่งสลิป</span>')))));
+          : (isLate(o) ? '<span class="pill red">⚠️ เลยรอบแล้ว · ทักถามลูกค้า</span>' : '<span class="pill red">⏳ ยังไม่ส่งสลิป</span>'))));
   const isTable = o.fulfillment === 'table';
   const tableNo = String(o.location_note || '').replace(/^โต๊ะ\s*/, '');
   const st = o.status === 'cancelled' ? '<span class="pill">ยกเลิก</span>' : (wait ? '' : '<span class="pill blue">' + h(STATUS_TH[o.status] || o.status) + '</span>');
@@ -788,7 +785,7 @@ const ACT = {
     const o = S.data.orders.find((x) => x.order_id === id);
     const go = () => update(id, { pay_status: 'paid' }, 'ยืนยันจ่ายแล้ว ✓ ลูกค้าได้แต้มแล้ว');
     // ยังไม่มีสลิป → ถามก่อน กันกดพลาด
-    if (o && isWaiting(o)) return confirmBox('ยืนยันว่าได้รับเงินแล้ว?', 'ออเดอร์นี้ลูกค้ายังไม่ได้ส่งสลิปในแชท ยืนยันแล้วออเดอร์จะขึ้นในรายการที่ต้องทำ', 'ได้รับเงินแล้ว', go);
+    if (o && needSlip(o)) return confirmBox('ยืนยันว่าได้รับเงินแล้ว?', 'ออเดอร์นี้ลูกค้ายังไม่ได้ส่งสลิปในแชท', 'ได้รับเงินแล้ว', go);
     go();
   },
   status: (arg) => { const [id, st] = arg.split('|'); update(id, { status: st }); },
@@ -819,7 +816,7 @@ const ACT = {
       '<div class="opt"><span>ทดสอบเสียง</span><button class="chip" data-act="testSound">🔔 ลอง</button></div>' +
       '<div class="muted" style="font-size:12px">ความดังขึ้นกับระดับเสียงสื่อ (Media) ของมือถือ ตั้งไว้สูงสุดและปิดโหมดเงียบนะ</div>' +
       '<button class="btn soft" style="width:100%;margin-top:12px" data-act="qrTables">🔲 ปริ้นป้าย QR สั่งที่โต๊ะ</button>' +
-      '<div class="muted" style="font-size:13px;margin-top:10px">เปิดหน้านี้ค้างไว้ ระบบจะเช็คออเดอร์ใหม่ทุก ' + CONFIG.POLL_SECONDS + ' วินาที และพยายามไม่ให้จอดับ · ออเดอร์จะเด้งเตือนเมื่อลูกค้าส่งสลิปแล้วเท่านั้น</div>' +
+      '<div class="muted" style="font-size:13px;margin-top:10px">เปิดหน้านี้ค้างไว้ ระบบจะเช็คออเดอร์ใหม่ทุก ' + CONFIG.POLL_SECONDS + ' วินาที และพยายามไม่ให้จอดับ</div>' +
       '<div class="row-btns"><button class="btn ghost grow" data-act="logout">ออกจากระบบ</button><button class="btn primary grow" data-act="closeSheet">เสร็จ</button></div>');
   },
   testSound: () => { unlockAudio(); setTimeout(() => ding(true), 50); },
